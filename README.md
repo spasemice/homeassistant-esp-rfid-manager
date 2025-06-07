@@ -50,7 +50,7 @@
 4. Додајте го следниов URL:
 
 ```
-https://github.com/your-username/homeassistant-esp-rfid-manager
+https://github.com/spasemice/homeassistant-esp-rfid-manager
 ```
 
 5. Кликнете **Add**

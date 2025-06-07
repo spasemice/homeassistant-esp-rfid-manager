@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP-RFID Manager</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        .device-card {
+            transition: all 0.3s ease;
+        }
+        .device-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .status-online {
+            color: #198754;
+        }
+        .status-offline {
+            color: #dc3545;
+        }
+        .log-entry {
+            font-size: 0.9rem;
+            border-left: 3px solid #dee2e6;
+            padding-left: 10px;
+            margin-bottom: 8px;
+        }
+        .log-entry.access-granted {
+            border-left-color: #198754;
+        }
+        .log-entry.access-denied {
+            border-left-color: #dc3545;
+        }
+        .card-registration {
+            border: 2px dashed #ffc107;
+            background-color: #fff3cd;
+        }
+        .real-time-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #198754;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body class="bg-light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">
+                <i class="bi bi-shield-lock"></i> ESP-RFID Manager
+            </a>
+            <div class="d-flex align-items-center">
+                <div class="real-time-indicator me-2"></div>
+                <small class="text-light">Live Updates</small>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-4">
+        <!-- Devices Overview -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <h4><i class="bi bi-router"></i> ESP-RFID Devices</h4>
+                <div id="devices-container" class="row">
+                    <!-- Devices will be loaded here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Card Registration Alerts -->
+        <div id="card-registrations-alert" class="alert alert-warning d-none" role="alert">
+            <h5><i class="bi bi-credit-card-2-back"></i> New Cards Detected</h5>
+            <div id="card-registrations-list"></div>
+        </div>
+
+        <div class="row">
+            <!-- Users Management -->
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5><i class="bi bi-people"></i> User Management</h5>
+                        <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addUserModal">
+                            <i class="bi bi-person-plus"></i> Add User
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <select id="device-filter" class="form-select">
+                                <option value="">All Devices</option>
+                            </select>
+                        </div>
+                        <div id="users-table-container">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Name</th>
+                                        <th>UID</th>
+                                        <th>Device</th>
+                                        <th>Access</th>
+                                        <th>Valid Until</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="users-table">
+                                    <!-- Users will be loaded here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Access Logs -->
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="bi bi-clock-history"></i> Recent Access Logs</h5>
+                    </div>
+                    <div class="card-body" style="max-height: 400px; overflow-y: auto;">
+                        <div id="access-logs">
+                            <!-- Logs will be loaded here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Events Log -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="bi bi-list-ul"></i> System Events</h5>
+                    </div>
+                    <div class="card-body" style="max-height: 300px; overflow-y: auto;">
+                        <div id="system-events">
+                            <!-- Events will be loaded here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add User Modal -->
+    <div class="modal fade" id="addUserModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Add New User</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="addUserForm">
+                        <div class="mb-3">
+                            <label for="userName" class="form-label">User Name</label>
+                            <input type="text" class="form-control" id="userName" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="userUID" class="form-label">Card UID</label>
+                            <input type="text" class="form-control" id="userUID" required>
+                            <div class="form-text">Scan a card or enter UID manually</div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="userDevice" class="form-label">Device</label>
+                            <select class="form-select" id="userDevice" required>
+                                <option value="">Select Device</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label for="userAccess" class="form-label">Access Type</label>
+                            <select class="form-select" id="userAccess">
+                                <option value="1">Always</option>
+                                <option value="0">Disabled</option>
+                                <option value="99">Admin</option>
+                            </select>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label for="validFrom" class="form-label">Valid From</label>
+                                <input type="datetime-local" class="form-control" id="validFrom">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="validUntil" class="form-label">Valid Until</label>
+                                <input type="datetime-local" class="form-control" id="validUntil">
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="addUser()">Add User</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Card Registration Modal -->
+    <div class="modal fade" id="cardRegistrationModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Register New Card</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-info">
+                        <strong>Card UID:</strong> <span id="cardUID"></span><br>
+                        <strong>Device:</strong> <span id="cardDevice"></span>
+                    </div>
+                    <form id="cardRegistrationForm">
+                        <div class="mb-3">
+                            <label for="cardUserName" class="form-label">User Name</label>
+                            <input type="text" class="form-control" id="cardUserName" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="cardUserAccess" class="form-label">Access Type</label>
+                            <select class="form-select" id="cardUserAccess">
+                                <option value="1">Always</option>
+                                <option value="0">Disabled</option>
+                                <option value="99">Admin</option>
+                            </select>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label for="cardValidFrom" class="form-label">Valid From</label>
+                                <input type="datetime-local" class="form-control" id="cardValidFrom">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="cardValidUntil" class="form-label">Valid Until</label>
+                                <input type="datetime-local" class="form-control" id="cardValidUntil">
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="registerCard()">Register Card</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <script>
+        // Initialize Socket.IO
+        const socket = io();
+        let currentRegistrationId = null;
+
+        // Socket event handlers
+        socket.on('connect', function() {
+            console.log('Connected to server');
+        });
+
+        socket.on('access_event', function(data) {
+            addAccessLog(data);
+        });
+
+        socket.on('new_card_detected', function(data) {
+            showCardRegistration(data);
+        });
+
+        socket.on('mqtt_message', function(data) {
+            addSystemEvent(data);
+        });
+
+        // Load initial data
+        document.addEventListener('DOMContentLoaded', function() {
+            loadDevices();
+            loadUsers();
+            loadAccessLogs();
+            loadCardRegistrations();
+            
+            // Set default datetime values
+            const now = new Date();
+            const nextYear = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+            document.getElementById('validFrom').value = now.toISOString().slice(0, 16);
+            document.getElementById('validUntil').value = nextYear.toISOString().slice(0, 16);
+        });
+
+        // Load devices
+        function loadDevices() {
+            fetch('/api/devices')
+                .then(response => response.json())
+                .then(devices => {
+                    const container = document.getElementById('devices-container');
+                    const deviceFilter = document.getElementById('device-filter');
+                    const userDevice = document.getElementById('userDevice');
+                    
+                    container.innerHTML = '';
+                    deviceFilter.innerHTML = '<option value="">All Devices</option>';
+                    userDevice.innerHTML = '<option value="">Select Device</option>';
+                    
+                    devices.forEach(device => {
+                        // Device card
+                        const deviceCard = document.createElement('div');
+                        deviceCard.className = 'col-md-4 mb-3';
+                        deviceCard.innerHTML = `
+                            <div class="card device-card">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <h6 class="card-title">${device.hostname}</h6>
+                                        <span class="badge ${device.status === 'online' ? 'bg-success' : 'bg-danger'}">
+                                            ${device.status}
+                                        </span>
+                                    </div>
+                                    <p class="card-text small">
+                                        <strong>IP:</strong> ${device.ip_address}<br>
+                                        <strong>Last Seen:</strong> ${new Date(device.last_seen).toLocaleString()}
+                                    </p>
+                                    <div class="btn-group btn-group-sm w-100">
+                                        <button class="btn btn-outline-primary" onclick="openDoor('${device.hostname}')">
+                                            <i class="bi bi-door-open"></i> Open
+                                        </button>
+                                        <button class="btn btn-outline-info" onclick="refreshUsers('${device.hostname}')">
+                                            <i class="bi bi-arrow-clockwise"></i> Sync
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                        container.appendChild(deviceCard);
+                        
+                        // Add to filters
+                        const filterOption = document.createElement('option');
+                        filterOption.value = device.hostname;
+                        filterOption.textContent = device.hostname;
+                        deviceFilter.appendChild(filterOption);
+                        
+                        const deviceOption = document.createElement('option');
+                        deviceOption.value = device.hostname;
+                        deviceOption.textContent = device.hostname;
+                        userDevice.appendChild(deviceOption);
+                    });
+                })
+                .catch(error => console.error('Error loading devices:', error));
+        }
+
+        // Load users
+        function loadUsers() {
+            const deviceFilter = document.getElementById('device-filter').value;
+            const url = deviceFilter ? `/api/users?device=${deviceFilter}` : '/api/users';
+            
+            fetch(url)
+                .then(response => response.json())
+                .then(users => {
+                    const tbody = document.getElementById('users-table');
+                    tbody.innerHTML = '';
+                    
+                    users.forEach(user => {
+                        const row = document.createElement('tr');
+                        const validUntil = user.valid_until ? new Date(user.valid_until * 1000).toLocaleDateString() : 'Never';
+                        const accessType = user.acctype === 99 ? 'Admin' : user.acctype === 1 ? 'Always' : 'Disabled';
+                        
+                        row.innerHTML = `
+                            <td>${user.username}</td>
+                            <td><code>${user.uid}</code></td>
+                            <td>${user.device_hostname}</td>
+                            <td><span class="badge ${user.acctype === 1 ? 'bg-success' : user.acctype === 99 ? 'bg-warning' : 'bg-secondary'}">${accessType}</span></td>
+                            <td>${validUntil}</td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-danger" onclick="deleteUser(${user.id})">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                })
+                .catch(error => console.error('Error loading users:', error));
+        }
+
+        // Load access logs
+        function loadAccessLogs() {
+            fetch('/api/access-logs?limit=20')
+                .then(response => response.json())
+                .then(logs => {
+                    const container = document.getElementById('access-logs');
+                    container.innerHTML = '';
+                    
+                    logs.forEach(log => {
+                        addAccessLog(log);
+                    });
+                })
+                .catch(error => console.error('Error loading access logs:', error));
+        }
+
+        // Add access log entry
+        function addAccessLog(log) {
+            const container = document.getElementById('access-logs');
+            const logEntry = document.createElement('div');
+            const isGranted = log.access_type && !log.access_type.includes('Denied');
+            
+            logEntry.className = `log-entry ${isGranted ? 'access-granted' : 'access-denied'}`;
+            logEntry.innerHTML = `
+                <div class="d-flex justify-content-between">
+                    <strong>${log.username} (${log.uid})</strong>
+                    <small>${new Date(log.timestamp).toLocaleString()}</small>
+                </div>
+                <div>
+                    <span class="badge ${isGranted ? 'bg-success' : 'bg-danger'}">${log.access_type}</span>
+                    <small class="text-muted">on ${log.device_hostname} - ${log.door_name}</small>
+                </div>
+            `;
+            
+            container.insertBefore(logEntry, container.firstChild);
+            
+            // Keep only last 20 entries
+            while (container.children.length > 20) {
+                container.removeChild(container.lastChild);
+            }
+        }
+
+        // Load card registrations
+        function loadCardRegistrations() {
+            fetch('/api/card-registrations')
+                .then(response => response.json())
+                .then(registrations => {
+                    if (registrations.length > 0) {
+                        const alert = document.getElementById('card-registrations-alert');
+                        const list = document.getElementById('card-registrations-list');
+                        
+                        list.innerHTML = '';
+                        registrations.forEach(reg => {
+                            const item = document.createElement('div');
+                            item.className = 'mb-2';
+                            item.innerHTML = `
+                                <div class="card card-registration">
+                                    <div class="card-body py-2">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <div>
+                                                <strong>UID:</strong> ${reg.uid}<br>
+                                                <small><strong>Device:</strong> ${reg.device_hostname}</small>
+                                            </div>
+                                            <button class="btn btn-primary btn-sm" onclick="showCardRegistrationModal(${reg.id}, '${reg.uid}', '${reg.device_hostname}')">
+                                                Register
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                            list.appendChild(item);
+                        });
+                        
+                        alert.classList.remove('d-none');
+                    }
+                })
+                .catch(error => console.error('Error loading card registrations:', error));
+        }
+
+        // Show card registration
+        function showCardRegistration(data) {
+            loadCardRegistrations(); // Refresh the list
+        }
+
+        // Show card registration modal
+        function showCardRegistrationModal(id, uid, hostname) {
+            currentRegistrationId = id;
+            document.getElementById('cardUID').textContent = uid;
+            document.getElementById('cardDevice').textContent = hostname;
+            
+            // Set default datetime values
+            const now = new Date();
+            const nextYear = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+            document.getElementById('cardValidFrom').value = now.toISOString().slice(0, 16);
+            document.getElementById('cardValidUntil').value = nextYear.toISOString().slice(0, 16);
+            
+            new bootstrap.Modal(document.getElementById('cardRegistrationModal')).show();
+        }
+
+        // Register card
+        function registerCard() {
+            const username = document.getElementById('cardUserName').value;
+            const acctype = document.getElementById('cardUserAccess').value;
+            const validFrom = document.getElementById('cardValidFrom').value;
+            const validUntil = document.getElementById('cardValidUntil').value;
+            
+            if (!username) {
+                alert('Please enter a username');
+                return;
+            }
+            
+            const data = {
+                username: username,
+                acctype: parseInt(acctype),
+                valid_since: validFrom ? Math.floor(new Date(validFrom).getTime() / 1000) : 0,
+                valid_until: validUntil ? Math.floor(new Date(validUntil).getTime() / 1000) : 0
+            };
+            
+            fetch(`/api/card-registrations/${currentRegistrationId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.error) {
+                    alert('Error: ' + result.error);
+                } else {
+                    bootstrap.Modal.getInstance(document.getElementById('cardRegistrationModal')).hide();
+                    loadUsers();
+                    loadCardRegistrations();
+                    alert('Card registered successfully!');
+                }
+            })
+            .catch(error => {
+                console.error('Error registering card:', error);
+                alert('Error registering card');
+            });
+        }
+
+        // Add user
+        function addUser() {
+            const username = document.getElementById('userName').value;
+            const uid = document.getElementById('userUID').value;
+            const device = document.getElementById('userDevice').value;
+            const acctype = document.getElementById('userAccess').value;
+            const validFrom = document.getElementById('validFrom').value;
+            const validUntil = document.getElementById('validUntil').value;
+            
+            if (!username || !uid || !device) {
+                alert('Please fill in all required fields');
+                return;
+            }
+            
+            const data = {
+                username: username,
+                uid: uid,
+                device_hostname: device,
+                acctype: parseInt(acctype),
+                valid_since: validFrom ? Math.floor(new Date(validFrom).getTime() / 1000) : 0,
+                valid_until: validUntil ? Math.floor(new Date(validUntil).getTime() / 1000) : 0
+            };
+            
+            fetch('/api/users', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.error) {
+                    alert('Error: ' + result.error);
+                } else {
+                    bootstrap.Modal.getInstance(document.getElementById('addUserModal')).hide();
+                    document.getElementById('addUserForm').reset();
+                    loadUsers();
+                    alert('User added successfully!');
+                }
+            })
+            .catch(error => {
+                console.error('Error adding user:', error);
+                alert('Error adding user');
+            });
+        }
+
+        // Delete user
+        function deleteUser(userId) {
+            if (!confirm('Are you sure you want to delete this user?')) {
+                return;
+            }
+            
+            fetch(`/api/users/${userId}`, {
+                method: 'DELETE'
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.error) {
+                    alert('Error: ' + result.error);
+                } else {
+                    loadUsers();
+                    alert('User deleted successfully!');
+                }
+            })
+            .catch(error => {
+                console.error('Error deleting user:', error);
+                alert('Error deleting user');
+            });
+        }
+
+        // Open door
+        function openDoor(hostname) {
+            fetch('/api/doors/open', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({device_hostname: hostname})
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.error) {
+                    alert('Error: ' + result.error);
+                } else {
+                    alert('Door opened successfully!');
+                }
+            })
+            .catch(error => {
+                console.error('Error opening door:', error);
+                alert('Error opening door');
+            });
+        }
+
+        // Refresh users from device
+        function refreshUsers(hostname) {
+            // This would trigger a getuserlist command to the device
+            alert('User sync requested for ' + hostname);
+        }
+
+        // Add system event
+        function addSystemEvent(data) {
+            const container = document.getElementById('system-events');
+            const eventEntry = document.createElement('div');
+            
+            eventEntry.className = 'small mb-1 p-2 border-start border-2 border-info';
+            eventEntry.innerHTML = `
+                <div class="d-flex justify-content-between">
+                    <strong>${data.topic}</strong>
+                    <small>${new Date(data.timestamp).toLocaleString()}</small>
+                </div>
+                <pre class="mb-0 small">${JSON.stringify(data.payload, null, 2)}</pre>
+            `;
+            
+            container.insertBefore(eventEntry, container.firstChild);
+            
+            // Keep only last 10 events
+            while (container.children.length > 10) {
+                container.removeChild(container.lastChild);
+            }
+        }
+
+        // Device filter change
+        document.getElementById('device-filter').addEventListener('change', loadUsers);
+
+        // Auto refresh data every 30 seconds
+        setInterval(() => {
+            loadDevices();
+            loadAccessLogs();
+        }, 30000);
+    </script>
+</body>
+</html> 

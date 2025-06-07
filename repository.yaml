@@ -1,0 +1,4 @@
+# https://developers.home-assistant.io/docs/add-ons/repository
+name: ESP-RFID Manager Add-ons
+url: https://github.com/your-username/homeassistant-esp-rfid-manager
+maintainer: ESP-RFID Manager Team 

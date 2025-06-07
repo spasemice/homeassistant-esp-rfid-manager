@@ -1,0 +1,35 @@
+name: ESP-RFID Manager
+description: Home Assistant addon for managing ESP-RFID devices and users
+version: "1.0.0"
+slug: esp-rfid-manager
+init: false
+arch:
+  - armhf
+  - armv7
+  - aarch64
+  - amd64
+  - i386
+startup: application
+boot: auto
+options:
+  mqtt_host: "127.0.0.1"
+  mqtt_port: 1883
+  mqtt_user: ""
+  mqtt_password: ""
+  mqtt_topic: "/esprfid"
+  log_level: "info"
+  web_port: 8080
+  auto_discovery: true
+schema:
+  mqtt_host: str
+  mqtt_port: int(1,65535)
+  mqtt_user: str?
+  mqtt_password: str?
+  mqtt_topic: str
+  log_level: list(trace|debug|info|notice|warning|error|fatal)?
+  web_port: int(1024,65535)
+  auto_discovery: bool
+ports:
+  8080/tcp: 8080
+map:
+  - addon_config:rw 

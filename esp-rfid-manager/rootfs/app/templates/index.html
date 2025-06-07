@@ -86,9 +86,14 @@
                 <div class="card">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5><i class="bi bi-people"></i> User Management</h5>
-                        <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addUserModal">
-                            <i class="bi bi-person-plus"></i> Add User
-                        </button>
+                        <div class="btn-group">
+                            <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addUserModal">
+                                <i class="bi bi-person-plus"></i> Add User
+                            </button>
+                            <button class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#bulkAssignModal" onclick="loadBulkAssignDevices()">
+                                <i class="bi bi-people-fill"></i> Bulk Assign
+                            </button>
+                        </div>
                     </div>
                     <div class="card-body">
                         <div class="mb-3">
@@ -165,8 +170,16 @@
                         </div>
                         <div class="mb-3">
                             <label for="userUID" class="form-label">Card UID</label>
-                            <input type="text" class="form-control" id="userUID" required>
-                            <div class="form-text">Scan a card or enter UID manually</div>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="userUID" required placeholder="Scan a card or enter UID manually">
+                                <span class="input-group-text">
+                                    <i class="bi bi-credit-card" title="Scan a card on any ESP-RFID device"></i>
+                                </span>
+                            </div>
+                            <div class="form-text">
+                                <i class="bi bi-info-circle"></i> 
+                                Open this modal and scan a card on any ESP-RFID device to auto-fill the UID
+                            </div>
                         </div>
                         <div class="mb-3">
                             <label for="userDevice" class="form-label">Device</label>
@@ -248,6 +261,113 @@
         </div>
     </div>
 
+    <!-- Edit User Modal -->
+    <div class="modal fade" id="editUserModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Edit User</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="editUserForm">
+                        <div class="mb-3">
+                            <label for="editUserName" class="form-label">User Name</label>
+                            <input type="text" class="form-control" id="editUserName" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="editUserUID" class="form-label">Card UID</label>
+                            <input type="text" class="form-control" id="editUserUID" readonly>
+                        </div>
+                        <div class="mb-3">
+                            <label for="editUserDevice" class="form-label">Device</label>
+                            <input type="text" class="form-control" id="editUserDevice" readonly>
+                        </div>
+                        <div class="mb-3">
+                            <label for="editUserAccess" class="form-label">Access Type</label>
+                            <select class="form-select" id="editUserAccess">
+                                <option value="1">Always</option>
+                                <option value="0">Disabled</option>
+                                <option value="99">Admin</option>
+                            </select>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label for="editValidFrom" class="form-label">Valid From</label>
+                                <input type="datetime-local" class="form-control" id="editValidFrom">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="editValidUntil" class="form-label">Valid Until</label>
+                                <input type="datetime-local" class="form-control" id="editValidUntil">
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="updateUser()">Update User</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bulk Assign User Modal -->
+    <div class="modal fade" id="bulkAssignModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Assign User to Multiple Doors</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="bulkAssignForm">
+                        <div class="mb-3">
+                            <label for="bulkUserName" class="form-label">User Name</label>
+                            <input type="text" class="form-control" id="bulkUserName" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="bulkUserUID" class="form-label">Card UID</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="bulkUserUID" required placeholder="Scan a card or enter UID manually">
+                                <span class="input-group-text">
+                                    <i class="bi bi-credit-card" title="Scan a card on any ESP-RFID device"></i>
+                                </span>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Select Doors/Devices</label>
+                            <div id="bulkDevicesList" class="border rounded p-2" style="max-height: 200px; overflow-y: auto;">
+                                <!-- Device checkboxes will be loaded here -->
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="bulkUserAccess" class="form-label">Access Type</label>
+                            <select class="form-select" id="bulkUserAccess">
+                                <option value="1">Always</option>
+                                <option value="0">Disabled</option>
+                                <option value="99">Admin</option>
+                            </select>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label for="bulkValidFrom" class="form-label">Valid From</label>
+                                <input type="datetime-local" class="form-control" id="bulkValidFrom">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="bulkValidUntil" class="form-label">Valid Until</label>
+                                <input type="datetime-local" class="form-control" id="bulkValidUntil">
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="bulkAssignUser()">Assign to Selected Doors</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
     <script>
@@ -270,6 +390,26 @@
 
         socket.on('mqtt_message', function(data) {
             addSystemEvent(data);
+            
+            // Handle unknown card scanning for manual user registration
+            if (data.payload && data.payload.type === 'WARN' && 
+                data.payload.desc === 'Unknown rfid tag is scanned') {
+                handleUnknownCardScanned(data.payload);
+                
+                // Also handle for bulk assign modal
+                const bulkModal = document.getElementById('bulkAssignModal');
+                if (bulkModal && bulkModal.classList.contains('show')) {
+                    const uid = data.payload.data;
+                    document.getElementById('bulkUserUID').value = uid;
+                    
+                    // Show success feedback
+                    const uidField = document.getElementById('bulkUserUID');
+                    uidField.classList.add('bg-success', 'bg-opacity-25');
+                    setTimeout(() => {
+                        uidField.classList.remove('bg-success', 'bg-opacity-25');
+                    }, 2000);
+                }
+            }
         });
 
         // Load initial data
@@ -367,9 +507,14 @@
                             <td><span class="badge ${user.acctype === 1 ? 'bg-success' : user.acctype === 99 ? 'bg-warning' : 'bg-secondary'}">${accessType}</span></td>
                             <td>${validUntil}</td>
                             <td>
-                                <button class="btn btn-sm btn-outline-danger" onclick="deleteUser(${user.id})">
-                                    <i class="bi bi-trash"></i>
-                                </button>
+                                <div class="btn-group btn-group-sm">
+                                    <button class="btn btn-outline-primary" onclick="editUser(${user.id})" title="Edit User">
+                                        <i class="bi bi-pencil"></i>
+                                    </button>
+                                    <button class="btn btn-outline-danger" onclick="deleteUser(${user.id})" title="Delete User">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                </div>
                             </td>
                         `;
                         tbody.appendChild(row);
@@ -519,6 +664,75 @@
             });
         }
 
+        // Handle unknown card scanned
+        function handleUnknownCardScanned(payload) {
+            const uid = payload.data;
+            const hostname = payload.hostname;
+            
+            // Check if Add User modal is open 
+            const modal = document.getElementById('addUserModal');
+            if (modal && modal.classList.contains('show')) {
+                // Auto-fill the UID field
+                document.getElementById('userUID').value = uid;
+                
+                // Auto-select the device if available
+                const deviceSelect = document.getElementById('userDevice');
+                for (let option of deviceSelect.options) {
+                    if (option.value === hostname) {
+                        deviceSelect.value = hostname;
+                        break;
+                    }
+                }
+                
+                // Show success feedback
+                const uidField = document.getElementById('userUID');
+                uidField.classList.add('bg-success', 'bg-opacity-25');
+                setTimeout(() => {
+                    uidField.classList.remove('bg-success', 'bg-opacity-25');
+                }, 2000);
+                
+                // Check if card is already registered to another user
+                checkCardDuplicate(uid);
+            }
+        }
+
+        // Check if card is already registered
+        function checkCardDuplicate(uid) {
+            fetch(`/api/users?uid=${encodeURIComponent(uid)}`)
+                .then(response => response.json())
+                .then(users => {
+                    if (users.length > 0) {
+                        const user = users[0];
+                        const warningDiv = document.getElementById('cardDuplicateWarning') || createCardWarningDiv();
+                        warningDiv.innerHTML = `
+                            <div class="alert alert-warning alert-dismissible fade show" role="alert">
+                                <strong>Warning:</strong> This card is already registered to user <strong>${user.username}</strong> on device <strong>${user.device_hostname}</strong>.
+                                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                            </div>
+                        `;
+                        warningDiv.classList.remove('d-none');
+                    } else {
+                        const warningDiv = document.getElementById('cardDuplicateWarning');
+                        if (warningDiv) {
+                            warningDiv.classList.add('d-none');
+                        }
+                    }
+                })
+                .catch(error => console.error('Error checking card duplicate:', error));
+        }
+
+        // Create card warning div if it doesn't exist
+        function createCardWarningDiv() {
+            const warningDiv = document.createElement('div');
+            warningDiv.id = 'cardDuplicateWarning';
+            warningDiv.className = 'd-none';
+            
+            const uidField = document.getElementById('userUID');
+            uidField.parentNode.insertBefore(warningDiv, uidField.nextSibling);
+            
+            return warningDiv;
+        }
+
         // Add user
         function addUser() {
             const username = document.getElementById('userName').value;
@@ -615,8 +829,25 @@
 
         // Refresh users from device
         function refreshUsers(hostname) {
-            // This would trigger a getuserlist command to the device
-            alert('User sync requested for ' + hostname);
+            fetch(`/api/devices/${hostname}/sync`, {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.error) {
+                    alert('Error: ' + result.error);
+                } else {
+                    alert('User sync requested for ' + hostname + '. Users will be updated automatically.');
+                    // Refresh the users table after a short delay
+                    setTimeout(() => {
+                        loadUsers();
+                    }, 2000);
+                }
+            })
+            .catch(error => {
+                console.error('Error syncing users:', error);
+                alert('Error requesting user sync');
+            });
         }
 
         // Add system event
@@ -640,6 +871,198 @@
                 container.removeChild(container.lastChild);
             }
         }
+
+        // Edit user
+        let currentEditUserId = null;
+        function editUser(userId) {
+            // Get user data
+            fetch(`/api/users`)
+                .then(response => response.json())
+                .then(users => {
+                    const user = users.find(u => u.id === userId);
+                    if (!user) {
+                        alert('User not found');
+                        return;
+                    }
+                    
+                    currentEditUserId = userId;
+                    document.getElementById('editUserName').value = user.username;
+                    document.getElementById('editUserUID').value = user.uid;
+                    document.getElementById('editUserDevice').value = user.device_hostname;
+                    document.getElementById('editUserAccess').value = user.acctype;
+                    
+                    // Convert timestamps to datetime-local format
+                    if (user.valid_since) {
+                        const validFrom = new Date(user.valid_since * 1000);
+                        document.getElementById('editValidFrom').value = validFrom.toISOString().slice(0, 16);
+                    }
+                    if (user.valid_until) {
+                        const validUntil = new Date(user.valid_until * 1000);
+                        document.getElementById('editValidUntil').value = validUntil.toISOString().slice(0, 16);
+                    }
+                    
+                    new bootstrap.Modal(document.getElementById('editUserModal')).show();
+                })
+                .catch(error => {
+                    console.error('Error loading user:', error);
+                    alert('Error loading user data');
+                });
+        }
+
+        // Update user
+        function updateUser() {
+            if (!currentEditUserId) return;
+            
+            const username = document.getElementById('editUserName').value;
+            const acctype = document.getElementById('editUserAccess').value;
+            const validFrom = document.getElementById('editValidFrom').value;
+            const validUntil = document.getElementById('editValidUntil').value;
+            
+            if (!username) {
+                alert('Please enter a username');
+                return;
+            }
+            
+            const data = {
+                username: username,
+                acctype: parseInt(acctype),
+                valid_since: validFrom ? Math.floor(new Date(validFrom).getTime() / 1000) : 0,
+                valid_until: validUntil ? Math.floor(new Date(validUntil).getTime() / 1000) : 0
+            };
+            
+            fetch(`/api/users/${currentEditUserId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.error) {
+                    alert('Error: ' + result.error);
+                } else {
+                    bootstrap.Modal.getInstance(document.getElementById('editUserModal')).hide();
+                    loadUsers();
+                    alert('User updated successfully!');
+                }
+            })
+            .catch(error => {
+                console.error('Error updating user:', error);
+                alert('Error updating user');
+            });
+        }
+
+        // Load devices for bulk assign
+        function loadBulkAssignDevices() {
+            fetch('/api/devices')
+                .then(response => response.json())
+                .then(devices => {
+                    const container = document.getElementById('bulkDevicesList');
+                    container.innerHTML = '';
+                    
+                    devices.forEach(device => {
+                        const checkbox = document.createElement('div');
+                        checkbox.className = 'form-check';
+                        checkbox.innerHTML = `
+                            <input class="form-check-input" type="checkbox" value="${device.hostname}" id="device_${device.hostname}">
+                            <label class="form-check-label" for="device_${device.hostname}">
+                                <strong>${device.hostname}</strong> 
+                                <small class="text-muted">(${device.ip_address})</small>
+                                <span class="badge ${device.status === 'online' ? 'bg-success' : 'bg-danger'} ms-2">${device.status}</span>
+                            </label>
+                        `;
+                        container.appendChild(checkbox);
+                    });
+                    
+                    // Set default datetime values for bulk assign
+                    const now = new Date();
+                    const nextYear = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+                    document.getElementById('bulkValidFrom').value = now.toISOString().slice(0, 16);
+                    document.getElementById('bulkValidUntil').value = nextYear.toISOString().slice(0, 16);
+                })
+                .catch(error => console.error('Error loading devices:', error));
+        }
+
+        // Bulk assign user
+        function bulkAssignUser() {
+            const username = document.getElementById('bulkUserName').value;
+            const uid = document.getElementById('bulkUserUID').value;
+            const acctype = document.getElementById('bulkUserAccess').value;
+            const validFrom = document.getElementById('bulkValidFrom').value;
+            const validUntil = document.getElementById('bulkValidUntil').value;
+            
+            // Get selected devices
+            const selectedDevices = [];
+            const checkboxes = document.querySelectorAll('#bulkDevicesList input[type="checkbox"]:checked');
+            checkboxes.forEach(cb => selectedDevices.push(cb.value));
+            
+            if (!username || !uid || selectedDevices.length === 0) {
+                alert('Please fill in all required fields and select at least one device');
+                return;
+            }
+            
+            const data = {
+                username: username,
+                uid: uid,
+                devices: selectedDevices,
+                acctype: parseInt(acctype),
+                valid_since: validFrom ? Math.floor(new Date(validFrom).getTime() / 1000) : 0,
+                valid_until: validUntil ? Math.floor(new Date(validUntil).getTime() / 1000) : 0
+            };
+            
+            fetch('/api/users/bulk-assign', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.results) {
+                    let successCount = 0;
+                    let errorCount = 0;
+                    let message = 'Bulk assignment results:\n\n';
+                    
+                    result.results.forEach(res => {
+                        if (res.status === 'success') {
+                            successCount++;
+                            message += `✓ ${res.device}: ${res.message}\n`;
+                        } else {
+                            errorCount++;
+                            message += `✗ ${res.device}: ${res.message}\n`;
+                        }
+                    });
+                    
+                    message += `\nSummary: ${successCount} successful, ${errorCount} failed`;
+                    alert(message);
+                    
+                    if (successCount > 0) {
+                        bootstrap.Modal.getInstance(document.getElementById('bulkAssignModal')).hide();
+                        document.getElementById('bulkAssignForm').reset();
+                        loadUsers();
+                    }
+                } else {
+                    alert('Error: ' + (result.error || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Error bulk assigning user:', error);
+                alert('Error bulk assigning user');
+            });
+        }
+
+
+
+        // Listen for user sync events
+        socket.on('user_synced', function(data) {
+            console.log('User synced:', data);
+            // Refresh users table when a user is synced from device
+            setTimeout(() => {
+                loadUsers();
+            }, 1000);
+        });
 
         // Device filter change
         document.getElementById('device-filter').addEventListener('change', loadUsers);

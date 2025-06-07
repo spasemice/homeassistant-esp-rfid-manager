@@ -69,7 +69,7 @@ mqtt_host: "127.0.0.1"          # IP на MQTT broker
 mqtt_port: 1883                 # MQTT port  
 mqtt_user: ""                   # MQTT username (опционално)
 mqtt_password: ""               # MQTT password (опционално)
-mqtt_topic: "/esprfid"          # MQTT topic база
+mqtt_topic: "esprfid"          # MQTT topic база
 log_level: "info"               # Log level
 web_port: 8080                  # Web интерфејс port
 auto_discovery: true            # Auto device discovery

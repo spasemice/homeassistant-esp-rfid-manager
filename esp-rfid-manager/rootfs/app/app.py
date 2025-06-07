@@ -300,10 +300,29 @@ class ESPRFIDManager:
         acctype = payload.get('acctype', 1)
         valid_since = payload.get('validsince', 0)
         valid_until = payload.get('validuntil', 0)
+        hostname = payload.get('hostname', '')
         
-        # We need to determine which device this came from
-        # This might need to be tracked differently
-        logger.info(f"Received user file: {username} ({uid})")
+        if uid and username and hostname:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT OR REPLACE INTO users 
+                    (uid, username, device_hostname, acctype, valid_since, valid_until, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                ''', (uid, username, hostname, acctype, valid_since, valid_until))
+                conn.commit()
+            
+            logger.info(f"Synced user from device {hostname}: {username} ({uid})")
+            
+            # Emit real-time update
+            socketio.emit('user_synced', {
+                'uid': uid,
+                'username': username,
+                'hostname': hostname,
+                'acctype': acctype
+            })
+        else:
+            logger.warning(f"Incomplete user data received: {payload}")
     
     def handle_card_scan(self, payload: Dict):
         """Handle unknown card scan for registration"""
@@ -419,15 +438,25 @@ def api_devices():
 def api_users():
     """Get list of users"""
     device = request.args.get('device', '')
+    uid = request.args.get('uid', '')
     
     with get_db() as conn:
         cursor = conn.cursor()
-        if device:
+        
+        if uid:
+            # Search by UID
+            cursor.execute('''
+                SELECT * FROM users WHERE uid = ? 
+                ORDER BY created_at DESC
+            ''', (uid,))
+        elif device:
+            # Filter by device
             cursor.execute('''
                 SELECT * FROM users WHERE device_hostname = ? 
                 ORDER BY created_at DESC
             ''', (device,))
         else:
+            # Get all users
             cursor.execute('SELECT * FROM users ORDER BY created_at DESC')
         
         users = []
@@ -653,6 +682,125 @@ def api_open_door():
             return jsonify({'message': 'Door opened successfully'})
         else:
             return jsonify({'error': 'Failed to open door'}), 500
+
+@app.route('/api/devices/<hostname>/sync', methods=['POST'])
+def api_sync_device_users(hostname):
+    """Sync users from ESP-RFID device"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT ip_address FROM devices WHERE hostname = ?', (hostname,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'error': 'Device not found'}), 404
+        device_ip = row['ip_address']
+    
+    success = manager.get_user_list(device_ip)
+    
+    if success:
+        return jsonify({'message': 'User sync requested successfully'})
+    else:
+        return jsonify({'error': 'Failed to request user sync'}), 500
+
+@app.route('/api/users/bulk-assign', methods=['POST']) 
+def api_bulk_assign_user():
+    """Assign user to multiple devices"""
+    data = request.get_json()
+    uid = data.get('uid', '')
+    username = data.get('username', '')
+    devices = data.get('devices', [])
+    acctype = int(data.get('acctype', 1))
+    valid_since = int(data.get('valid_since', 0))
+    valid_until = int(data.get('valid_until', 0))
+    
+    if not all([uid, username, devices]):
+        return jsonify({'error': 'Missing required fields'}), 400
+    
+    results = []
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        for device_hostname in devices:
+            # Get device IP
+            cursor.execute('SELECT ip_address FROM devices WHERE hostname = ?', (device_hostname,))
+            row = cursor.fetchone()
+            if not row:
+                results.append({'device': device_hostname, 'status': 'error', 'message': 'Device not found'})
+                continue
+            
+            device_ip = row['ip_address']
+            
+            # Send MQTT command
+            success = manager.add_user(device_ip, uid, username, acctype, valid_since, valid_until)
+            
+            if success:
+                # Add to local database
+                cursor.execute('''
+                    INSERT OR REPLACE INTO users 
+                    (uid, username, device_hostname, acctype, valid_since, valid_until, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                ''', (uid, username, device_hostname, acctype, valid_since, valid_until))
+                results.append({'device': device_hostname, 'status': 'success', 'message': 'User added'})
+            else:
+                results.append({'device': device_hostname, 'status': 'error', 'message': 'Failed to add user'})
+        
+        conn.commit()
+    
+    return jsonify({'results': results})
+
+@app.route('/api/users/<int:user_id>', methods=['PUT'])
+def api_edit_user(user_id):
+    """Edit existing user"""
+    data = request.get_json()
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
+        user = cursor.fetchone()
+        
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Get updated values or keep existing
+        username = data.get('username', user['username'])
+        acctype = int(data.get('acctype', user['acctype']))
+        valid_since = int(data.get('valid_since', user['valid_since']))
+        valid_until = int(data.get('valid_until', user['valid_until']))
+        
+        # Get device IP
+        cursor.execute('SELECT ip_address FROM devices WHERE hostname = ?', (user['device_hostname'],))
+        device = cursor.fetchone()
+        if not device:
+            return jsonify({'error': 'Device not found'}), 404
+        
+        device_ip = device['ip_address']
+        
+        # Send updated user info via MQTT
+        success = manager.add_user(device_ip, user['uid'], username, acctype, valid_since, valid_until)
+        
+        if success:
+            # Update local database
+            cursor.execute('''
+                UPDATE users 
+                SET username = ?, acctype = ?, valid_since = ?, valid_until = ?, updated_at = datetime('now')
+                WHERE id = ?
+            ''', (username, acctype, valid_since, valid_until, user_id))
+            conn.commit()
+            return jsonify({'message': 'User updated successfully'})
+        else:
+            return jsonify({'error': 'Failed to update user'}), 500
+
+@app.route('/api/homeassistant/users')
+def api_homeassistant_users():
+    """Get Home Assistant users (mock implementation)"""
+    # This would normally integrate with Home Assistant API
+    # For now, return mock data - you can implement HA integration later
+    mock_users = [
+        {'id': 'user.admin', 'name': 'Administrator', 'username': 'admin'},
+        {'id': 'user.spase', 'name': 'Spase Micevski', 'username': 'spase'},
+        {'id': 'user.guest', 'name': 'Guest User', 'username': 'guest'},
+    ]
+    return jsonify(mock_users)
 
 # SocketIO events
 @socketio.on('connect')

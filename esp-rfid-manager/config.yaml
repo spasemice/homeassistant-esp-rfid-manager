@@ -16,7 +16,7 @@ options:
   mqtt_port: 1883
   mqtt_user: ""
   mqtt_password: ""
-  mqtt_topic: "/esprfid"
+  mqtt_topic: "esprfid"
   log_level: "info"
   web_port: 8080
   auto_discovery: true

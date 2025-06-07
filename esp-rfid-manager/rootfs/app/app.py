@@ -14,7 +14,7 @@ import threading
 import sqlite3
 from contextlib import contextmanager
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from flask import Flask, render_template, request, jsonify, redirect, url_for, Response
 from flask_socketio import SocketIO, emit
 import paho.mqtt.client as mqtt
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -142,6 +142,7 @@ class ESPRFIDManager:
         self.connected_devices: Dict[str, Dict] = {}
         self.scheduler = BackgroundScheduler()
         self.ha_discovery_sent = set()  # Track which discoveries we've sent
+        self.card_detection_active = False  # Track if we should detect new cards
         self.init_mqtt()
         
     def init_mqtt(self):
@@ -321,22 +322,14 @@ class ESPRFIDManager:
         description = payload.get('desc', '')
         data = payload.get('data', '')
         
-        # Handle unknown card scan for automatic registration
+        # Handle unknown card scan for automatic registration - only if detection is active
         if (event_type == 'WARN' and source == 'rfid' and 
-            description == 'Unknown rfid tag is scanned' and data):
+            description == 'Unknown rfid tag is scanned' and data and self.card_detection_active):
             # Extract UID from data (before space) like "8d0a0186 34"
             uid = data.split(' ')[0] if ' ' in data else data
             
             if uid and hostname:
-                with get_db() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute('''
-                        INSERT OR IGNORE INTO card_registrations (uid, device_hostname)
-                        VALUES (?, ?)
-                    ''', (uid, hostname))
-                    conn.commit()
-                
-                logger.info(f"Unknown card detected for registration: {uid} on {hostname}")
+                logger.info(f"Card detection active - Unknown card detected: {uid} on {hostname}")
                 socketio.emit('new_card_detected', {
                     'uid': uid,
                     'hostname': hostname,
@@ -408,17 +401,9 @@ class ESPRFIDManager:
             'timestamp': datetime.now().isoformat()
         })
         
-        # Handle unknown cards for registration
-        if username == 'Unknown' and uid and hostname:
-            with get_db() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT OR IGNORE INTO card_registrations (uid, device_hostname)
-                    VALUES (?, ?)
-                ''', (uid, hostname))
-                conn.commit()
-            
-            logger.info(f"Unknown card detected for registration: {uid} on {hostname}")
+        # Handle unknown cards for registration - only if detection is active
+        if username == 'Unknown' and uid and hostname and self.card_detection_active:
+            logger.info(f"Card detection active - Unknown card detected: {uid} on {hostname}")
             socketio.emit('new_card_detected', {
                 'uid': uid,
                 'hostname': hostname,
@@ -893,45 +878,72 @@ def api_users():
 
 @app.route('/api/users', methods=['POST'])
 def api_add_user():
-    """Add new user"""
+    """Add new user to multiple devices"""
     data = request.get_json()
     
     uid = data.get('uid', '')
     username = data.get('username', '')
-    device_hostname = data.get('device_hostname', '')
+    devices = data.get('devices', [])  # Now expects list of device hostnames
     acctype = int(data.get('acctype', 1))
     valid_since = int(data.get('valid_since', 0))
     valid_until = int(data.get('valid_until', 0))
     
-    if not all([uid, username, device_hostname]):
-        return jsonify({'error': 'Missing required fields'}), 400
+    # Support legacy single device format
+    if not devices:
+        device_hostname = data.get('device_hostname', '')
+        if device_hostname:
+            devices = [device_hostname]
     
-    # Get device IP
+    if not all([uid, username, devices]):
+        return jsonify({'error': 'Missing required fields: uid, username, devices'}), 400
+    
+    results = []
+    
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute('SELECT ip_address FROM devices WHERE hostname = ?', (device_hostname,))
-        row = cursor.fetchone()
-        if not row:
-            return jsonify({'error': 'Device not found'}), 404
-        device_ip = row['ip_address']
-    
-    # Send MQTT command to device
-    success = manager.add_user(device_ip, uid, username, acctype, valid_since, valid_until)
-    
-    if success:
-        # Add to local database
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT OR REPLACE INTO users 
-                (uid, username, device_hostname, acctype, valid_since, valid_until, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-            ''', (uid, username, device_hostname, acctype, valid_since, valid_until))
-            conn.commit()
         
-        return jsonify({'message': 'User added successfully'})
+        for device_hostname in devices:
+            # Get device IP
+            cursor.execute('SELECT ip_address FROM devices WHERE hostname = ?', (device_hostname,))
+            row = cursor.fetchone()
+            if not row:
+                results.append({'device': device_hostname, 'status': 'error', 'message': 'Device not found'})
+                continue
+            
+            device_ip = row['ip_address']
+            
+            # Send MQTT command to device
+            success = manager.add_user(device_ip, uid, username, acctype, valid_since, valid_until)
+            
+            if success:
+                # Add to local database
+                cursor.execute('''
+                    INSERT OR REPLACE INTO users 
+                    (uid, username, device_hostname, acctype, valid_since, valid_until, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                ''', (uid, username, device_hostname, acctype, valid_since, valid_until))
+                
+                results.append({'device': device_hostname, 'status': 'success', 'message': 'User added successfully'})
+                
+                logger.info(f"User {username} ({uid}) added to device {device_hostname} ({device_ip})")
+            else:
+                results.append({'device': device_hostname, 'status': 'error', 'message': 'Failed to send MQTT command'})
+        
+        conn.commit()
+    
+    # Check if any succeeded
+    success_count = sum(1 for r in results if r['status'] == 'success')
+    
+    if success_count > 0:
+        return jsonify({
+            'message': f'User added to {success_count}/{len(devices)} devices', 
+            'results': results
+        })
     else:
-        return jsonify({'error': 'Failed to add user'}), 500
+        return jsonify({
+            'error': 'Failed to add user to any device', 
+            'results': results
+        }), 500
 
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
 def api_delete_user(user_id):
@@ -1522,6 +1534,20 @@ def handle_connect():
 def handle_disconnect():
     """Handle client disconnection"""
     logger.info('Web client disconnected')
+
+@socketio.on('start_card_detection')
+def handle_start_card_detection():
+    """Start card detection for Add User modal"""
+    manager.card_detection_active = True
+    logger.info("Card detection started - Add User modal opened")
+    emit('card_detection_status', {'active': True, 'message': 'Card detection enabled - scan a card'})
+
+@socketio.on('stop_card_detection') 
+def handle_stop_card_detection():
+    """Stop card detection when Add User modal closes"""
+    manager.card_detection_active = False
+    logger.info("Card detection stopped - Add User modal closed")
+    emit('card_detection_status', {'active': False, 'message': 'Card detection disabled'})
 
 # Cleanup task for offline devices
 def cleanup_offline_devices():

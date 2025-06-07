@@ -7,6 +7,38 @@
 
 ## [Unreleased]
 
+## [1.0.4] - 2025-06-07
+
+### Поправено
+- Поправен Response import error во Flask API endpoints
+- Поправено испраќање MQTT команди при додавање корисници - сега се испраќаат до ESP-RFID уредите
+- Паметна детекција на картички - работи само кога е отворен Add User модалот
+- Отстранети непотребни "New Cards Detected" известувања што се појавуваа секогаш
+
+### Подобрено  
+- Multi-device поддршка при додавање корисници - може да се избираат повеќе уреди одеднаш
+- Checkbox интерфејс за избор на уреди наместо dropdown
+- Автоматско вклучување/исклучување на card detection кога се отвора/затвора Add User модалот
+- Card detection status индикатор во Add User модалот
+- Детални резултати за секој уред при додавање корисници (успех/грешка)
+- Подобрено автоматско чистење на формите кога се затворани модалите
+- Подобрено логирање на MQTT операции
+
+### Техничко
+- Додадени SocketIO events за контрола на card detection (start_card_detection, stop_card_detection)
+- Ажуриран API endpoint `/api/users` за multi-device поддршка
+- Додаден `card_detection_active` flag во ESPRFIDManager класата
+- Поддршка за legacy single device format за backward compatibility
+
+## [1.0.3] - 2025-06-07
+
+### Додадено
+- Home Assistant MQTT Auto Discovery sensors за door status, last access, unknown cards
+- Button entities за remote door unlock со user permission checking  
+- Complete access history tracking mapping HA users to ESP-RFID users
+- User permission API за прикажување само на дозволени врати
+- API endpoints за Home Assistant интеграција и dashboard конфигурации
+
 ## [1.0.0] - 2025-06-07
 
 ### Додадено

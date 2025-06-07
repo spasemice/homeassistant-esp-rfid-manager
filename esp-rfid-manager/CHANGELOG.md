@@ -7,6 +7,31 @@
 
 ## [Unreleased]
 
+## [1.0.7] - 2025-06-07
+
+### Подобрено
+- Додадени детални attributes во сите Home Assistant sensors
+- Door sensors сега содржат последен пристапил корисник, UID, IP адреса, и време
+- Online/offline sensors со device IP, hostname, last seen timestamp, и статус промени
+- Unknown card sensors со детални информации за scan тип и device info
+- Access history sensors со детално мапирање на корисници и метод на пристап
+- Подобрени friendly names во сите sensor attributes за полесно читање
+
+### Додадено
+- IP адреса на уредот во сите sensor attributes
+- Hostname информации во сите sensors
+- Timestamp за секоја статус промена
+- Последен корисник пристап во door status attributes
+- Access method tracking (RFID, HA button, etc.)
+- Детални friendly messages за секој event
+- Подобрени логови со device-specific информации
+
+### Техничко
+- Проширени update_ha_sensors() функција со повеќе attributes
+- Додадени json_attributes_topic во сите HA discovery configs
+- Подобрено мапирање на device IP адреси во attributes
+- Enhanced event tracking со повеќе детали
+
 ## [1.0.6] - 2025-06-07
 
 ### Поправено

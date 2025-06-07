@@ -1,0 +1,200 @@
+# ESP-RFID Manager - Access History Dashboard
+# Shows detailed user access history from both RFID cards and Home Assistant buttons
+
+type: vertical-stack
+cards:
+  # Header
+  - type: markdown
+    content: |
+      # 📋 ESP-RFID Access History
+      **Complete user access tracking for all doors**
+      
+      This dashboard shows who accessed which doors and how (RFID card vs Home Assistant button)
+
+  # Today's Access Summary
+  - type: entities
+    title: "📊 Today's Access Summary"
+    show_header_toggle: false
+    entities:
+      - type: custom:bar-card
+        entity: sensor.esp_rfid_doors_online_count
+        name: "Doors Online"
+        icon: mdi:door
+        positions:
+          icon: inside
+          name: inside
+        
+      - sensor.esp_rfid_security_status
+
+  # Real-time Access Events
+  - type: entities
+    title: "🔄 Live Access Events"
+    show_header_toggle: false
+    entities:
+      - sensor.esp_rfid_esp_rfidx_access_history
+      - sensor.esp_rfid_office_door_access_history
+      
+  # Detailed Access History Table
+  - type: custom:auto-entities
+    card:
+      type: entities
+      title: "📝 Recent Access History"
+      show_header_toggle: false
+    filter:
+      include:
+        - entity_id: "sensor.esp_rfid_*_access_history"
+          options:
+            type: custom:multiple-entity-row
+            entity: this.entity_id
+            name: this.attributes.display_name
+            secondary_info: this.attributes.timestamp
+            state_header: Access Type
+            entities:
+              - attribute: access_method
+                name: Method
+                icon: |
+                  {% if this.attributes.access_method == 'ha_button' %}
+                    mdi:home-assistant
+                  {% else %}
+                    mdi:card-account-details
+                  {% endif %}
+              - attribute: door_hostname
+                name: Door
+                icon: mdi:door
+    sort:
+      method: last_changed
+      reverse: true
+
+  # Access by User Chart
+  - type: custom:apexcharts-card
+    header:
+      title: "📈 Access Patterns (Last 7 Days)"
+      show: true
+    graph_span: 7d
+    span:
+      end: day
+    series:
+      - entity: sensor.esp_rfid_esp_rfidx_access_history
+        type: column
+        name: "Main Door"
+        group_by:
+          func: count
+          duration: 1d
+      - entity: sensor.esp_rfid_office_door_access_history
+        type: column
+        name: "Office Door"
+        group_by:
+          func: count
+          duration: 1d
+
+  # Access Methods Breakdown
+  - type: horizontal-stack
+    cards:
+      - type: gauge
+        entity: sensor.esp_rfid_esp_rfidx_access_history
+        name: "RFID Access"
+        needle: true
+        min: 0
+        max: 100
+        segments:
+          - from: 0
+            to: 50
+            color: green
+          - from: 50
+            to: 80
+            color: yellow
+          - from: 80
+            to: 100
+            color: red
+            
+      - type: gauge
+        entity: sensor.esp_rfid_office_door_access_history
+        name: "HA Button Access"
+        needle: true
+        min: 0
+        max: 100
+        segments:
+          - from: 0
+            to: 50
+            color: blue
+          - from: 50
+            to: 80
+            color: orange
+          - from: 80
+            to: 100
+            color: purple
+
+  # User Access Timeline
+  - type: history-graph
+    title: "⏰ Access Timeline (24h)"
+    hours_to_show: 24
+    refresh_interval: 30
+    entities:
+      - sensor.esp_rfid_esp_rfidx_access_history
+      - sensor.esp_rfid_office_door_access_history
+
+  # Failed Access Attempts
+  - type: conditional
+    conditions:
+      - entity: sensor.esp_rfid_esp_rfidx_last_access
+        state: "Denied"
+    card:
+      type: entities
+      title: "🚫 Recent Failed Access Attempts"
+      show_header_toggle: false
+      entities:
+        - sensor.esp_rfid_esp_rfidx_unknown_card
+        - sensor.esp_rfid_office_door_unknown_card
+
+  # User Access Breakdown Table
+  - type: markdown
+    content: |
+      ## 👥 User Access Summary
+      
+      | User | Total Access | RFID | HA Button | Last Access |
+      |------|-------------|------|-----------|------------|
+      {% for entity_id in states.sensor -%}
+        {%- if 'access_history' in entity_id.entity_id -%}
+          {%- set user = entity_id.attributes.display_name -%}
+          {%- set method = entity_id.attributes.access_method -%}
+          {%- set timestamp = entity_id.attributes.timestamp -%}
+          | {{ user }} | - | {% if method == 'rfid' %}✓{% endif %} | {% if method == 'ha_button' %}✓{% endif %} | {{ timestamp }} |
+        {%- endif -%}
+      {%- endfor %}
+
+  # Quick Actions for Access Management
+  - type: entities
+    title: "🛠️ Access Management"
+    show_header_toggle: false
+    entities:
+      - type: button
+        entity: script.esp_rfid_sync_all_users
+        name: "🔄 Sync All Users"
+        tap_action:
+          action: call-service
+          service: script.esp_rfid_sync_all_users
+          
+      - type: divider
+      
+      - type: button
+        entity: input_boolean.esp_rfid_notifications
+        name: "🔔 Access Notifications"
+        
+      - type: button
+        entity: input_boolean.esp_rfid_master_enable
+        name: "🔐 Master System Enable"
+
+  # Export & API Links
+  - type: markdown
+    content: |
+      ## 🔗 Export & API Access
+      
+      **API Endpoints for Integration:**
+      - [Access History API](http://homeassistant.local:8080/api/homeassistant/access-history)
+      - [User Doors API](http://homeassistant.local:8080/api/homeassistant/user-doors)
+      
+      **Integration Help:**
+      - Replace `homeassistant.local:8080` with your actual ESP-RFID Manager addon URL
+      - Add `?username=USER` to filter by specific user
+      - Add `?device=HOSTNAME` to filter by specific door
+      - Add `?limit=N` to limit number of results 

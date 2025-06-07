@@ -141,6 +141,7 @@ class ESPRFIDManager:
         self.mqtt_client = None
         self.connected_devices: Dict[str, Dict] = {}
         self.scheduler = BackgroundScheduler()
+        self.ha_discovery_sent = set()  # Track which discoveries we've sent
         self.init_mqtt()
         
     def init_mqtt(self):
@@ -180,6 +181,19 @@ class ESPRFIDManager:
         """Handle incoming MQTT messages"""
         try:
             topic = msg.topic
+            logger.debug(f"Received MQTT message: {topic}")
+            
+            # Handle button commands from Home Assistant
+            if "/unlock/cmd" in topic and topic.startswith("homeassistant/button/"):
+                # Extract hostname from topic: homeassistant/button/esp_rfid_HOSTNAME_unlock/cmd
+                parts = topic.split('/')
+                if len(parts) >= 3:
+                    button_id = parts[2]  # esp_rfid_HOSTNAME_unlock
+                    if button_id.startswith('esp_rfid_') and button_id.endswith('_unlock'):
+                        hostname = button_id[9:-7]  # Remove esp_rfid_ prefix and _unlock suffix
+                        self.handle_unlock_command(hostname)
+                return
+            
             payload = json.loads(msg.payload.decode())
             logger.debug(f"Received MQTT message: {topic} -> {payload}")
             
@@ -204,6 +218,8 @@ class ESPRFIDManager:
                 self.handle_event_message(payload)
             elif cmd == 'userfile':
                 self.handle_userfile_message(payload)
+            elif cmd == 'log':
+                self.handle_log_message(payload)
             elif payload.get('uid') and not msg_type:  # Card scan for registration
                 self.handle_card_scan(payload)
                 
@@ -232,6 +248,9 @@ class ESPRFIDManager:
             'last_seen': datetime.now(),
             'status': 'online'
         }
+        
+        # Send Home Assistant MQTT Discovery for this device
+        self.send_ha_discovery(hostname, ip_address)
     
     def handle_boot_message(self, payload: Dict):
         """Handle device boot message"""
@@ -281,6 +300,18 @@ class ESPRFIDManager:
             'door_name': door_name,
             'timestamp': datetime.now().isoformat()
         })
+        
+        # Update Home Assistant sensors
+        self.update_ha_sensors(hostname, 'access', {
+            'username': username,
+            'uid': uid,
+            'access_type': access_type,
+            'door_name': door_name,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        # Log to HA history
+        self.log_access_to_ha_history(hostname, username, uid, access_type, 'rfid')
     
     def handle_event_message(self, payload: Dict):
         """Handle system event message"""
@@ -289,6 +320,28 @@ class ESPRFIDManager:
         source = payload.get('src', '')
         description = payload.get('desc', '')
         data = payload.get('data', '')
+        
+        # Handle unknown card scan for automatic registration
+        if (event_type == 'WARN' and source == 'rfid' and 
+            description == 'Unknown rfid tag is scanned' and data):
+            # Extract UID from data (before space) like "8d0a0186 34"
+            uid = data.split(' ')[0] if ' ' in data else data
+            
+            if uid and hostname:
+                with get_db() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        INSERT OR IGNORE INTO card_registrations (uid, device_hostname)
+                        VALUES (?, ?)
+                    ''', (uid, hostname))
+                    conn.commit()
+                
+                logger.info(f"Unknown card detected for registration: {uid} on {hostname}")
+                socketio.emit('new_card_detected', {
+                    'uid': uid,
+                    'hostname': hostname,
+                    'timestamp': datetime.now().isoformat()
+                })
         
         self.log_event(hostname, event_type, source, description, data)
     
@@ -324,6 +377,84 @@ class ESPRFIDManager:
         else:
             logger.warning(f"Incomplete user data received: {payload}")
     
+    def handle_log_message(self, payload: Dict):
+        """Handle log message from device (access attempts)"""
+        hostname = payload.get('hostname', '')
+        uid = payload.get('uid', '')
+        username = payload.get('username', 'Unknown')
+        access_type = payload.get('access', 'Denied')
+        door_name = payload.get('doorName', '')
+        
+        # Log the access attempt
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO access_logs 
+                (device_hostname, uid, username, access_type, is_known, door_name, raw_data)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (hostname, uid, username, access_type, username != 'Unknown', door_name, json.dumps(payload)))
+            conn.commit()
+        
+        logger.info(f"Access log: {username} ({uid}) -> {access_type} on {hostname}/{door_name}")
+        
+        # Emit access event to web clients
+        socketio.emit('access_event', {
+            'hostname': hostname,
+            'uid': uid,
+            'username': username,
+            'access_type': access_type,
+            'is_known': username != 'Unknown',
+            'door_name': door_name,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        # Handle unknown cards for registration
+        if username == 'Unknown' and uid and hostname:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT OR IGNORE INTO card_registrations (uid, device_hostname)
+                    VALUES (?, ?)
+                ''', (uid, hostname))
+                conn.commit()
+            
+            logger.info(f"Unknown card detected for registration: {uid} on {hostname}")
+            socketio.emit('new_card_detected', {
+                'uid': uid,
+                'hostname': hostname,
+                'timestamp': datetime.now().isoformat()
+            })
+        
+        # Emit card status info (registered or unknown)
+        socketio.emit('card_scan_result', {
+            'uid': uid,
+            'username': username,
+            'hostname': hostname,
+            'door_name': door_name,
+            'access_type': access_type,
+            'is_registered': username != 'Unknown',
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        # Update Home Assistant sensors
+        self.update_ha_sensors(hostname, 'access', {
+            'username': username,
+            'uid': uid,
+            'access_type': access_type,
+            'door_name': door_name,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        # Log to HA history
+        self.log_access_to_ha_history(hostname, username, uid, access_type, 'rfid')
+        
+        # If unknown card, also send unknown card event
+        if username == 'Unknown':
+            self.update_ha_sensors(hostname, 'unknown_card', {
+                'uid': uid,
+                'timestamp': datetime.now().isoformat()
+            })
+
     def handle_card_scan(self, payload: Dict):
         """Handle unknown card scan for registration"""
         uid = payload.get('uid', '')
@@ -402,6 +533,291 @@ class ESPRFIDManager:
             'cmd': 'getuserlist'
         }
         return self.send_mqtt_command(device_ip, command)
+    
+    def send_ha_discovery(self, hostname: str, ip_address: str):
+        """Send Home Assistant MQTT Discovery for device sensors"""
+        discovery_key = f"{hostname}"
+        
+        if discovery_key in self.ha_discovery_sent:
+            return
+        
+        device_info = {
+            "identifiers": [f"esp_rfid_{hostname}"],
+            "name": f"ESP-RFID {hostname}",
+            "model": "ESP-RFID",
+            "manufacturer": "ESP-RFID",
+            "sw_version": "1.0"
+        }
+        
+        # Door Status Sensor
+        door_status_config = {
+            "name": f"ESP-RFID {hostname} Door Status",
+            "unique_id": f"esp_rfid_{hostname}_door_status",
+            "state_topic": f"homeassistant/sensor/esp_rfid_{hostname}_door_status/state",
+            "icon": "mdi:door",
+            "device": device_info
+        }
+        
+        # Last Access Sensor
+        last_access_config = {
+            "name": f"ESP-RFID {hostname} Last Access",
+            "unique_id": f"esp_rfid_{hostname}_last_access",
+            "state_topic": f"homeassistant/sensor/esp_rfid_{hostname}_last_access/state",
+            "json_attributes_topic": f"homeassistant/sensor/esp_rfid_{hostname}_last_access/attributes",
+            "icon": "mdi:account-clock",
+            "device": device_info
+        }
+        
+        # Device Online Binary Sensor
+        online_config = {
+            "name": f"ESP-RFID {hostname} Online",
+            "unique_id": f"esp_rfid_{hostname}_online",
+            "state_topic": f"homeassistant/binary_sensor/esp_rfid_{hostname}_online/state",
+            "payload_on": "ON",
+            "payload_off": "OFF",
+            "device_class": "connectivity",
+            "icon": "mdi:wifi",
+            "device": device_info
+        }
+        
+        # Unknown Card Event
+        unknown_card_config = {
+            "name": f"ESP-RFID {hostname} Unknown Card",
+            "unique_id": f"esp_rfid_{hostname}_unknown_card",
+            "state_topic": f"homeassistant/sensor/esp_rfid_{hostname}_unknown_card/state",
+            "json_attributes_topic": f"homeassistant/sensor/esp_rfid_{hostname}_unknown_card/attributes",
+            "icon": "mdi:card-account-details-outline",
+            "device": device_info
+        }
+        
+        # Unlock Button
+        unlock_button_config = {
+            "name": f"ESP-RFID {hostname} Unlock Door",
+            "unique_id": f"esp_rfid_{hostname}_unlock_button",
+            "command_topic": f"homeassistant/button/esp_rfid_{hostname}_unlock/cmd",
+            "icon": "mdi:door-open",
+            "device": device_info
+        }
+        
+        # Access History Sensor
+        access_history_config = {
+            "name": f"ESP-RFID {hostname} Access History",
+            "unique_id": f"esp_rfid_{hostname}_access_history",
+            "state_topic": f"homeassistant/sensor/esp_rfid_{hostname}_access_history/state",
+            "json_attributes_topic": f"homeassistant/sensor/esp_rfid_{hostname}_access_history/attributes",
+            "icon": "mdi:history",
+            "device": device_info
+        }
+        
+        try:
+            # Send discovery messages
+            self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_door_status/config", 
+                                   json.dumps(door_status_config), retain=True)
+            self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_last_access/config", 
+                                   json.dumps(last_access_config), retain=True)
+            self.mqtt_client.publish(f"homeassistant/binary_sensor/esp_rfid_{hostname}_online/config", 
+                                   json.dumps(online_config), retain=True)
+            self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_unknown_card/config", 
+                                   json.dumps(unknown_card_config), retain=True)
+            self.mqtt_client.publish(f"homeassistant/button/esp_rfid_{hostname}_unlock/config", 
+                                   json.dumps(unlock_button_config), retain=True)
+            self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_access_history/config", 
+                                   json.dumps(access_history_config), retain=True)
+            
+            # Subscribe to button command topic
+            self.mqtt_client.subscribe(f"homeassistant/button/esp_rfid_{hostname}_unlock/cmd")
+            
+            # Send initial state
+            self.mqtt_client.publish(f"homeassistant/binary_sensor/esp_rfid_{hostname}_online/state", "ON")
+            self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_door_status/state", "ready")
+            
+            self.ha_discovery_sent.add(discovery_key)
+            logger.info(f"Sent Home Assistant discovery for {hostname}")
+            
+        except Exception as e:
+            logger.error(f"Failed to send HA discovery for {hostname}: {e}")
+    
+    def update_ha_sensors(self, hostname: str, event_type: str, data: Dict):
+        """Update Home Assistant sensors with new data"""
+        try:
+            if event_type == 'access':
+                username = data.get('username', 'Unknown')
+                uid = data.get('uid', '')
+                access_type = data.get('access_type', 'Denied')
+                door_name = data.get('door_name', '')
+                timestamp = data.get('timestamp', datetime.now().isoformat())
+                
+                # Update last access sensor
+                state = f"{username} ({access_type})"
+                attributes = {
+                    "username": username,
+                    "uid": uid,
+                    "access_type": access_type,
+                    "door_name": door_name,
+                    "timestamp": timestamp,
+                    "is_granted": "Denied" not in access_type
+                }
+                
+                self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_last_access/state", state)
+                self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_last_access/attributes", 
+                                       json.dumps(attributes))
+                
+                # Update door status
+                door_status = "granted" if "Denied" not in access_type else "denied"
+                self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_door_status/state", door_status)
+                
+            elif event_type == 'unknown_card':
+                uid = data.get('uid', '')
+                timestamp = data.get('timestamp', datetime.now().isoformat())
+                
+                attributes = {
+                    "uid": uid,
+                    "timestamp": timestamp,
+                    "hostname": hostname
+                }
+                
+                self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_unknown_card/state", uid)
+                self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_unknown_card/attributes", 
+                                       json.dumps(attributes))
+                
+        except Exception as e:
+            logger.error(f"Failed to update HA sensors for {hostname}: {e}")
+    
+    def handle_unlock_command(self, hostname: str):
+        """Handle unlock command from Home Assistant button"""
+        try:
+            # Get device IP from database
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT ip_address FROM devices WHERE hostname = ?', (hostname,))
+                row = cursor.fetchone()
+                
+                if not row:
+                    logger.error(f"Device {hostname} not found for unlock command")
+                    return
+                
+                device_ip = row['ip_address']
+            
+            # Send unlock command
+            success = self.open_door(device_ip)
+            
+            if success:
+                logger.info(f"Unlock command sent successfully to {hostname} ({device_ip})")
+                
+                # Update HA sensors to show door opened
+                self.update_ha_sensors(hostname, 'access', {
+                    'username': 'Home Assistant',
+                    'uid': 'HA-BUTTON',
+                    'access_type': 'Granted (Remote)',
+                    'door_name': hostname,
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+                # Log to HA history
+                self.log_access_to_ha_history(hostname, 'Home Assistant', 'HA-BUTTON', 'Granted (Remote)', 'ha_button')
+                
+                # Emit to web clients
+                socketio.emit('access_event', {
+                    'hostname': hostname,
+                    'uid': 'HA-BUTTON',
+                    'username': 'Home Assistant',
+                    'access_type': 'Granted (Remote)',
+                    'is_known': True,
+                    'door_name': hostname,
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+            else:
+                logger.error(f"Failed to send unlock command to {hostname}")
+                
+        except Exception as e:
+            logger.error(f"Error handling unlock command for {hostname}: {e}")
+    
+    def get_ha_user_from_rfid_user(self, rfid_username: str) -> Dict:
+        """Map ESP-RFID username to Home Assistant user info"""
+        # Simple mapping by username (can be enhanced later)
+        return {
+            'ha_username': rfid_username,
+            'display_name': rfid_username.title(),
+            'user_type': 'rfid_user'
+        }
+    
+    def get_rfid_user_from_ha_user(self, ha_username: str) -> Dict:
+        """Map Home Assistant username to ESP-RFID user info"""
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT username, device_hostname, acctype, valid_until
+                FROM users 
+                WHERE LOWER(username) = LOWER(?)
+                LIMIT 1
+            ''', (ha_username,))
+            user = cursor.fetchone()
+            
+            if user:
+                return {
+                    'rfid_username': user['username'],
+                    'device_hostname': user['device_hostname'],
+                    'access_type': user['acctype'],
+                    'valid_until': user['valid_until'],
+                    'user_type': 'registered_user'
+                }
+            else:
+                return {
+                    'rfid_username': ha_username,
+                    'device_hostname': None,
+                    'access_type': 0,
+                    'valid_until': 0,
+                    'user_type': 'unknown_user'
+                }
+    
+    def log_access_to_ha_history(self, hostname: str, username: str, uid: str, access_type: str, method: str = 'rfid'):
+        """Log access event to Home Assistant history with user mapping"""
+        try:
+            # Get user mapping info
+            if method == 'ha_button':
+                user_info = self.get_rfid_user_from_ha_user(username)
+                display_name = username
+            else:
+                user_info = self.get_ha_user_from_rfid_user(username)
+                display_name = user_info['display_name']
+            
+            timestamp = datetime.now().isoformat()
+            
+            # Create detailed history entry
+            history_state = f"{display_name} - {access_type}"
+            history_attributes = {
+                'username': username,
+                'display_name': display_name,
+                'uid': uid,
+                'access_type': access_type,
+                'access_method': method,
+                'door_hostname': hostname,
+                'timestamp': timestamp,
+                'user_info': user_info,
+                'friendly_message': f"{display_name} {access_type.lower()} access to {hostname} via {method.upper()}"
+            }
+            
+            # Update HA history sensor
+            self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_access_history/state", history_state)
+            self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_access_history/attributes", 
+                                   json.dumps(history_attributes))
+            
+            # Create logbook entry via MQTT
+            logbook_message = {
+                'name': f'ESP-RFID Access - {hostname}',
+                'message': f'{display_name} {access_type.lower()} access via {method.upper()}',
+                'entity_id': f'sensor.esp_rfid_{hostname}_access_history',
+                'domain': 'esp_rfid'
+            }
+            
+            # Send to Home Assistant logbook topic (if configured)
+            self.mqtt_client.publish('homeassistant/logbook/esp_rfid_access', json.dumps(logbook_message))
+            
+            logger.info(f"Logged HA history: {display_name} -> {hostname} ({access_type}) via {method}")
+            
+        except Exception as e:
+            logger.error(f"Failed to log access to HA history: {e}")
 
 # Global manager instance
 manager = ESPRFIDManager()
@@ -802,6 +1218,299 @@ def api_homeassistant_users():
     ]
     return jsonify(mock_users)
 
+@app.route('/api/homeassistant/config')
+def api_homeassistant_config():
+    """Generate Home Assistant configuration for ESP-RFID devices"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT hostname, ip_address, status, last_seen FROM devices ORDER BY hostname')
+        devices = cursor.fetchall()
+    
+    # Generate YAML configuration
+    config_yaml = """# ESP-RFID Manager - Home Assistant Configuration
+# Add this to your configuration.yaml
+
+# MQTT Sensors for ESP-RFID devices
+mqtt:
+  sensor:
+"""
+    
+    for device in devices:
+        hostname = device['hostname']
+        config_yaml += f"""
+    # {hostname} - Door Status
+    - name: "ESP-RFID {hostname} Door Status"
+      state_topic: "homeassistant/sensor/esp_rfid_{hostname}_door_status/state"
+      icon: "mdi:door"
+      
+    # {hostname} - Last Access
+    - name: "ESP-RFID {hostname} Last Access"
+      state_topic: "homeassistant/sensor/esp_rfid_{hostname}_last_access/state"
+      json_attributes_topic: "homeassistant/sensor/esp_rfid_{hostname}_last_access/attributes"
+      icon: "mdi:account-clock"
+      
+    # {hostname} - Unknown Card
+    - name: "ESP-RFID {hostname} Unknown Card"
+      state_topic: "homeassistant/sensor/esp_rfid_{hostname}_unknown_card/state"
+      json_attributes_topic: "homeassistant/sensor/esp_rfid_{hostname}_unknown_card/attributes"
+      icon: "mdi:card-account-details-outline"
+"""
+    
+    config_yaml += """
+  binary_sensor:
+"""
+    
+    for device in devices:
+        hostname = device['hostname']
+        config_yaml += f"""
+    # {hostname} - Online Status
+    - name: "ESP-RFID {hostname} Online"
+      state_topic: "homeassistant/binary_sensor/esp_rfid_{hostname}_online/state"
+      payload_on: "ON"
+      payload_off: "OFF"
+      device_class: connectivity
+      icon: "mdi:wifi"
+"""
+
+    return Response(config_yaml, mimetype='text/plain')
+
+@app.route('/api/homeassistant/dashboard')
+def api_homeassistant_dashboard():
+    """Generate Home Assistant dashboard configuration"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT hostname, ip_address, status, last_seen FROM devices ORDER BY hostname')
+        devices = cursor.fetchall()
+    
+    # Generate Lovelace dashboard YAML
+    dashboard_yaml = """# ESP-RFID Manager - Dashboard Configuration
+# Add this to your Lovelace dashboard
+
+type: vertical-stack
+cards:
+  # ESP-RFID Overview
+  - type: markdown
+    content: |
+      # 🚪 ESP-RFID Access Control
+      Monitor and control all your ESP-RFID devices
+      
+  # Grid of all doors
+  - type: grid
+    square: true
+    columns: 3
+    cards:
+"""
+    
+    for device in devices:
+        hostname = device['hostname']
+        dashboard_yaml += f"""
+      # {hostname} Door Card
+      - type: custom:button-card
+        entity: binary_sensor.esp_rfid_{hostname}_online
+        name: "{hostname}"
+        show_state: false
+        show_icon: true
+        icon: mdi:door
+        tap_action:
+          action: more-info
+        styles:
+          card:
+            - height: 120px
+          name:
+            - font-size: 14px
+            - font-weight: bold
+          icon:
+            - color: |
+                [[[
+                  if (entity.state === 'on') return 'green';
+                  else return 'red';
+                ]]]
+        custom_fields:
+          status: |
+            [[[
+              const status = entity.state === 'on' ? 'Online' : 'Offline';
+              return `<span style="font-size: 12px;">${{status}}</span>`;
+            ]]]
+          last_access: |
+            [[[
+              const lastAccess = states['sensor.esp_rfid_{hostname}_last_access'].state;
+              return `<span style="font-size: 10px; color: gray;">${{lastAccess || 'No access'}}</span>`;
+            ]]]
+        card_size: 1
+"""
+    
+    dashboard_yaml += """
+  
+  # Access History
+  - type: history-graph
+    title: "Recent Access History"
+    hours_to_show: 24
+    refresh_interval: 30
+    entities:
+"""
+    
+    for device in devices:
+        hostname = device['hostname']
+        dashboard_yaml += f"""      - sensor.esp_rfid_{hostname}_last_access
+"""
+    
+    dashboard_yaml += """
+  
+  # Unknown Cards Alert
+  - type: entities
+    title: "🔍 Unknown Cards Detected"
+    show_header_toggle: false
+    entities:
+"""
+    
+    for device in devices:
+        hostname = device['hostname']
+        dashboard_yaml += f"""      - sensor.esp_rfid_{hostname}_unknown_card
+"""
+
+    return Response(dashboard_yaml, mimetype='text/plain')
+
+@app.route('/api/homeassistant/user-doors')
+def api_homeassistant_user_doors():
+    """Get doors that the current Home Assistant user has access to"""
+    # Get Home Assistant user info from headers (if available)
+    ha_user = request.headers.get('X-Hassio-User', 'unknown')
+    ha_user_id = request.headers.get('X-Hassio-User-Id', 'unknown')
+    
+    # For demo purposes, we'll also accept query parameter
+    username = request.args.get('username', ha_user)
+    
+    logger.info(f"Checking door access for HA user: {username} (ID: {ha_user_id})")
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Get all devices that have this user
+        cursor.execute('''
+            SELECT DISTINCT d.hostname, d.ip_address, d.status, d.last_seen, u.username, u.acctype, u.valid_until
+            FROM devices d
+            JOIN users u ON d.hostname = u.device_hostname
+            WHERE LOWER(u.username) = LOWER(?) AND u.acctype > 0
+            ORDER BY d.hostname
+        ''', (username,))
+        user_doors = cursor.fetchall()
+        
+        # Get all available devices for comparison
+        cursor.execute('SELECT hostname, ip_address, status, last_seen FROM devices ORDER BY hostname')
+        all_devices = cursor.fetchall()
+    
+    # Format response
+    result = {
+        'user': {
+            'username': username,
+            'ha_user_id': ha_user_id,
+            'total_doors_accessible': len(user_doors)
+        },
+        'accessible_doors': [],
+        'all_doors': []
+    }
+    
+    # Add accessible doors with user info
+    for door in user_doors:
+        # Check if access is still valid
+        is_valid = True
+        if door['valid_until'] > 0:
+            valid_until_date = datetime.fromtimestamp(door['valid_until'])
+            is_valid = valid_until_date > datetime.now()
+        
+        result['accessible_doors'].append({
+            'hostname': door['hostname'],
+            'ip_address': door['ip_address'],
+            'status': door['status'],
+            'last_seen': door['last_seen'],
+            'username': door['username'],
+            'access_type': door['acctype'],
+            'is_valid': is_valid,
+            'ha_entity_button': f"button.esp_rfid_{door['hostname']}_unlock_door",
+            'ha_entity_status': f"binary_sensor.esp_rfid_{door['hostname']}_online"
+        })
+    
+    # Add all doors for context
+    for device in all_devices:
+        has_access = any(d['hostname'] == device['hostname'] for d in user_doors)
+        result['all_doors'].append({
+            'hostname': device['hostname'],
+            'ip_address': device['ip_address'],
+            'status': device['status'],
+            'last_seen': device['last_seen'],
+            'has_access': has_access
+        })
+    
+    return jsonify(result)
+
+@app.route('/api/homeassistant/access-history')
+def api_homeassistant_access_history():
+    """Get access history for Home Assistant with user mapping"""
+    username = request.args.get('username', '')
+    device_hostname = request.args.get('device', '')
+    limit = int(request.args.get('limit', 50))
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Build query based on filters
+        query = '''
+            SELECT device_hostname, uid, username, access_type, door_name, timestamp, raw_data
+            FROM access_logs 
+            WHERE 1=1
+        '''
+        params = []
+        
+        if username:
+            query += ' AND LOWER(username) = LOWER(?)'
+            params.append(username)
+        
+        if device_hostname:
+            query += ' AND device_hostname = ?'
+            params.append(device_hostname)
+        
+        query += ' ORDER BY timestamp DESC LIMIT ?'
+        params.append(limit)
+        
+        cursor.execute(query, params)
+        logs = cursor.fetchall()
+    
+    # Format for Home Assistant consumption
+    history_entries = []
+    
+    for log in logs:
+        # Map ESP-RFID user to HA user
+        user_info = manager.get_ha_user_from_rfid_user(log['username'])
+        
+        # Determine access method from raw_data
+        raw_data = json.loads(log['raw_data']) if log['raw_data'] else {}
+        
+        # Check if it was HA button access
+        method = 'ha_button' if log['uid'] == 'HA-BUTTON' else 'rfid'
+        
+        entry = {
+            'timestamp': log['timestamp'],
+            'hostname': log['device_hostname'],
+            'door_name': log['door_name'] or log['device_hostname'],
+            'username': log['username'],
+            'display_name': user_info['display_name'],
+            'uid': log['uid'],
+            'access_type': log['access_type'],
+            'access_method': method,
+            'ha_entity': f"sensor.esp_rfid_{log['device_hostname']}_access_history",
+            'logbook_message': f"{user_info['display_name']} {log['access_type'].lower()} access to {log['door_name'] or log['device_hostname']} via {method.upper()}",
+            'user_info': user_info
+        }
+        
+        history_entries.append(entry)
+    
+    return jsonify({
+        'total_entries': len(history_entries),
+        'username_filter': username,
+        'device_filter': device_hostname,
+        'entries': history_entries
+    })
+
 # SocketIO events
 @socketio.on('connect')
 def handle_connect():
@@ -821,12 +1530,34 @@ def cleanup_offline_devices():
     
     with get_db() as conn:
         cursor = conn.cursor()
+        
+        # Get devices that will be marked offline
+        cursor.execute('''
+            SELECT hostname FROM devices 
+            WHERE last_seen < ? AND status = 'online'
+        ''', (cutoff_time,))
+        offline_devices = cursor.fetchall()
+        
+        # Mark devices as offline
         cursor.execute('''
             UPDATE devices 
             SET status = 'offline' 
             WHERE last_seen < ? AND status = 'online'
         ''', (cutoff_time,))
         conn.commit()
+    
+    # Update Home Assistant sensors for offline devices
+    for device in offline_devices:
+        hostname = device['hostname']
+        if hostname in manager.connected_devices:
+            manager.connected_devices[hostname]['status'] = 'offline'
+        
+        try:
+            manager.mqtt_client.publish(f"homeassistant/binary_sensor/esp_rfid_{hostname}_online/state", "OFF")
+            manager.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_door_status/state", "offline")
+            logger.debug(f"Updated HA sensors for offline device: {hostname}")
+        except Exception as e:
+            logger.error(f"Failed to update HA sensors for offline device {hostname}: {e}")
 
 if __name__ == '__main__':
     # Initialize database

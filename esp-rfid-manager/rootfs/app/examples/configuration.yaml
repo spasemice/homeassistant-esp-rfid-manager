@@ -1,0 +1,272 @@
+# ESP-RFID Manager - Home Assistant Configuration
+# Add these configurations to your configuration.yaml file
+
+# MQTT Configuration (if not already configured)
+mqtt:
+  # Basic MQTT setup - adjust according to your broker
+  broker: localhost
+  port: 1883
+  username: !secret mqtt_username
+  password: !secret mqtt_password
+  
+  # ESP-RFID Sensors - Auto-configured via MQTT Discovery
+  # The ESP-RFID Manager addon automatically publishes discovery messages
+  # But you can also manually configure sensors if needed:
+  
+  sensor:
+    # Door Status Sensors
+    - name: "ESP-RFID Main Door Status"
+      state_topic: "homeassistant/sensor/esp_rfid_esp_rfidx_door_status/state"
+      icon: "mdi:door"
+      device:
+        identifiers: ["esp_rfid_esp_rfidx"]
+        name: "ESP-RFID Main Door"
+        model: "ESP-RFID"
+        manufacturer: "ESP-RFID"
+    
+    - name: "ESP-RFID Office Door Status"  
+      state_topic: "homeassistant/sensor/esp_rfid_office_door_door_status/state"
+      icon: "mdi:door"
+      device:
+        identifiers: ["esp_rfid_office_door"]
+        name: "ESP-RFID Office Door"
+        model: "ESP-RFID"
+        manufacturer: "ESP-RFID"
+    
+    # Last Access Sensors
+    - name: "ESP-RFID Main Door Last Access"
+      state_topic: "homeassistant/sensor/esp_rfid_esp_rfidx_last_access/state"
+      json_attributes_topic: "homeassistant/sensor/esp_rfid_esp_rfidx_last_access/attributes"
+      icon: "mdi:account-clock"
+      device:
+        identifiers: ["esp_rfid_esp_rfidx"]
+        name: "ESP-RFID Main Door"
+    
+    - name: "ESP-RFID Office Door Last Access"
+      state_topic: "homeassistant/sensor/esp_rfid_office_door_last_access/state"
+      json_attributes_topic: "homeassistant/sensor/esp_rfid_office_door_last_access/attributes"
+      icon: "mdi:account-clock"
+      device:
+        identifiers: ["esp_rfid_office_door"]
+        name: "ESP-RFID Office Door"
+    
+        # Unknown Card Detection
+    - name: "ESP-RFID Main Door Unknown Card"
+      state_topic: "homeassistant/sensor/esp_rfid_esp_rfidx_unknown_card/state"
+      json_attributes_topic: "homeassistant/sensor/esp_rfid_esp_rfidx_unknown_card/attributes"
+      icon: "mdi:card-account-details-outline"
+      device:
+        identifiers: ["esp_rfid_esp_rfidx"]
+        name: "ESP-RFID Main Door"
+    
+    - name: "ESP-RFID Office Door Unknown Card"
+      state_topic: "homeassistant/sensor/esp_rfid_office_door_unknown_card/state" 
+      json_attributes_topic: "homeassistant/sensor/esp_rfid_office_door_unknown_card/attributes"
+      icon: "mdi:card-account-details-outline"
+      device:
+        identifiers: ["esp_rfid_office_door"]
+        name: "ESP-RFID Office Door"
+    
+    # Access History Sensors
+    - name: "ESP-RFID Main Door Access History"
+      state_topic: "homeassistant/sensor/esp_rfid_esp_rfidx_access_history/state"
+      json_attributes_topic: "homeassistant/sensor/esp_rfid_esp_rfidx_access_history/attributes"
+      icon: "mdi:history"
+      device:
+        identifiers: ["esp_rfid_esp_rfidx"]
+        name: "ESP-RFID Main Door"
+    
+    - name: "ESP-RFID Office Door Access History"
+      state_topic: "homeassistant/sensor/esp_rfid_office_door_access_history/state"
+      json_attributes_topic: "homeassistant/sensor/esp_rfid_office_door_access_history/attributes"
+      icon: "mdi:history"
+      device:
+        identifiers: ["esp_rfid_office_door"]
+        name: "ESP-RFID Office Door"
+
+  binary_sensor:
+    # Online Status Sensors
+    - name: "ESP-RFID Main Door Online"
+      state_topic: "homeassistant/binary_sensor/esp_rfid_esp_rfidx_online/state"
+      payload_on: "ON"
+      payload_off: "OFF"
+      device_class: connectivity
+      icon: "mdi:wifi"
+      device:
+        identifiers: ["esp_rfid_esp_rfidx"]
+        name: "ESP-RFID Main Door"
+    
+    - name: "ESP-RFID Office Door Online"
+      state_topic: "homeassistant/binary_sensor/esp_rfid_office_door_online/state"
+      payload_on: "ON"
+      payload_off: "OFF"
+      device_class: connectivity
+      icon: "mdi:wifi"
+      device:
+        identifiers: ["esp_rfid_office_door"]
+        name: "ESP-RFID Office Door"
+
+  button:
+    # Unlock Buttons - Only visible to users with access
+    - name: "ESP-RFID Main Door Unlock"
+      command_topic: "homeassistant/button/esp_rfid_esp_rfidx_unlock/cmd"
+      icon: "mdi:door-open"
+      device:
+        identifiers: ["esp_rfid_esp_rfidx"]
+        name: "ESP-RFID Main Door"
+    
+    - name: "ESP-RFID Office Door Unlock"
+      command_topic: "homeassistant/button/esp_rfid_office_door_unlock/cmd"
+      icon: "mdi:door-open"
+      device:
+        identifiers: ["esp_rfid_office_door"]
+        name: "ESP-RFID Office Door"
+
+# Template Sensors for additional functionality
+template:
+  - sensor:
+      # Total Online Doors
+      - name: "ESP-RFID Doors Online Count"
+        state: >
+          {% set doors = [
+            states('binary_sensor.esp_rfid_esp_rfidx_online'),
+            states('binary_sensor.esp_rfid_office_door_online')
+          ] %}
+          {{ doors | select('eq', 'on') | list | count }}
+        unit_of_measurement: "doors"
+        icon: "mdi:door"
+      
+      # Security Status
+      - name: "ESP-RFID Security Status"
+        state: >
+          {% set offline_doors = [
+            states('binary_sensor.esp_rfid_esp_rfidx_online'),
+            states('binary_sensor.esp_rfid_office_door_online')
+          ] | select('eq', 'off') | list | count %}
+          {% if offline_doors == 0 %}
+            All Systems Online
+          {% else %}
+            {{ offline_doors }} Door(s) Offline
+          {% endif %}
+        icon: >
+          {% set offline_doors = [
+            states('binary_sensor.esp_rfid_esp_rfidx_online'),
+            states('binary_sensor.esp_rfid_office_door_online')
+          ] | select('eq', 'off') | list | count %}
+          {% if offline_doors == 0 %}
+            mdi:shield-check
+          {% else %}
+            mdi:shield-alert
+          {% endif %}
+
+# Automations for ESP-RFID events
+automation:
+  # Alert on Unknown Card
+  - alias: "ESP-RFID Unknown Card Alert"
+    trigger:
+      - platform: state
+        entity_id:
+          - sensor.esp_rfid_esp_rfidx_unknown_card
+          - sensor.esp_rfid_office_door_unknown_card
+    condition:
+      - condition: template
+        value_template: "{{ trigger.to_state.state not in ['unavailable', 'unknown', ''] }}"
+    action:
+      - service: notify.mobile_app_your_phone
+        data:
+          title: "🔍 Unknown Card Detected"
+          message: >
+            Unknown card {{ trigger.to_state.state }} detected at {{ trigger.to_state.attributes.hostname }}
+          data:
+            tag: "esp_rfid_unknown_card"
+            actions:
+              - action: "REGISTER_CARD"
+                title: "Register Card"
+                uri: "http://homeassistant.local:8080"
+
+  # Alert on Door Offline  
+  - alias: "ESP-RFID Door Offline Alert"
+    trigger:
+      - platform: state
+        entity_id:
+          - binary_sensor.esp_rfid_esp_rfidx_online
+          - binary_sensor.esp_rfid_office_door_online
+        to: "off"
+        for:
+          minutes: 2
+    action:
+      - service: notify.mobile_app_your_phone
+        data:
+          title: "⚠️ ESP-RFID Door Offline"
+          message: >
+            {{ trigger.to_state.attributes.friendly_name }} went offline
+          data:
+            tag: "esp_rfid_offline"
+
+  # Log Access Events
+  - alias: "ESP-RFID Access Log"
+    trigger:
+      - platform: state
+        entity_id:
+          - sensor.esp_rfid_esp_rfidx_last_access
+          - sensor.esp_rfid_office_door_last_access
+    condition:
+      - condition: template
+        value_template: "{{ trigger.to_state.state not in ['unavailable', 'unknown'] }}"
+    action:
+      - service: logbook.log
+        data:
+          name: "ESP-RFID Access"
+          message: >
+            {{ trigger.to_state.state }} at {{ trigger.to_state.attributes.friendly_name }}
+          entity_id: "{{ trigger.entity_id }}"
+  
+  # Log Detailed Access History
+  - alias: "ESP-RFID Detailed Access History"
+    trigger:
+      - platform: state
+        entity_id:
+          - sensor.esp_rfid_esp_rfidx_access_history
+          - sensor.esp_rfid_office_door_access_history
+    condition:
+      - condition: template
+        value_template: "{{ trigger.to_state.state not in ['unavailable', 'unknown'] }}"
+    action:
+      - service: logbook.log
+        data:
+          name: "ESP-RFID Detailed Access"
+          message: >
+            {{ trigger.to_state.attributes.friendly_message }}
+          entity_id: "{{ trigger.entity_id }}"
+
+# Input Booleans for manual control
+input_boolean:
+  esp_rfid_master_enable:
+    name: "ESP-RFID Master Enable"
+    icon: mdi:power
+  
+  esp_rfid_notifications:
+    name: "ESP-RFID Notifications"
+    icon: mdi:bell
+
+# Scripts for common actions
+script:
+  esp_rfid_open_main_door:
+    alias: "Open Main Door"
+    sequence:
+      - service: mqtt.publish
+        data:
+          topic: "/esprfid/esp-rfidx/cmd"
+          payload: '{"cmd": "opendoor"}'
+  
+  esp_rfid_sync_all_users:
+    alias: "Sync All Users"
+    sequence:
+      - service: mqtt.publish
+        data:
+          topic: "/esprfid/esp-rfidx/cmd"
+          payload: '{"cmd": "getuserlist"}'
+      - service: mqtt.publish
+        data:
+          topic: "/esprfid/office-door/cmd"
+          payload: '{"cmd": "getuserlist"}' 

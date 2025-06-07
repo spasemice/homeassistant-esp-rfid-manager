@@ -1,0 +1,156 @@
+# ESP-RFID Manager - User-Specific Dashboard
+# This dashboard shows only doors that the current Home Assistant user has access to
+
+type: vertical-stack
+cards:
+  # Welcome Header
+  - type: markdown
+    content: |
+      # 🔑 My Door Access
+      **Welcome, {{ user }}!**
+      
+      Below are the doors you have access to through the ESP-RFID system.
+      
+  # Personal Door Access Grid - Only shows doors user has access to
+  - type: conditional
+    conditions:
+      - entity: button.esp_rfid_esp_rfidx_unlock_door
+        state_not: "unavailable"
+    card:
+      type: vertical-stack
+      cards:
+        - type: markdown
+          content: "## 🚪 Main Entrance"
+        - type: horizontal-stack
+          cards:
+            - type: entity
+              entity: binary_sensor.esp_rfid_esp_rfidx_online
+              name: "Door Status"
+              state_color: true
+              
+            - type: entity
+              entity: sensor.esp_rfid_esp_rfidx_last_access
+              name: "Last Access"
+              
+            - type: entity
+              entity: button.esp_rfid_esp_rfidx_unlock_door
+              name: "Unlock Door"
+              tap_action:
+                action: call-service
+                service: button.press
+                service_data:
+                  entity_id: button.esp_rfid_esp_rfidx_unlock_door
+
+  # Office Door Access
+  - type: conditional
+    conditions:
+      - entity: button.esp_rfid_office_door_unlock_door
+        state_not: "unavailable"
+    card:
+      type: vertical-stack
+      cards:
+        - type: markdown
+          content: "## 🏢 Office Door"
+        - type: horizontal-stack
+          cards:
+            - type: entity
+              entity: binary_sensor.esp_rfid_office_door_online
+              name: "Door Status"
+              state_color: true
+              
+            - type: entity
+              entity: sensor.esp_rfid_office_door_last_access
+              name: "Last Access"
+              
+            - type: entity
+              entity: button.esp_rfid_office_door_unlock_door
+              name: "Unlock Door"
+              tap_action:
+                action: call-service
+                service: button.press
+                service_data:
+                  entity_id: button.esp_rfid_office_door_unlock_door
+
+  # Dynamic Access List - Shows all accessible doors
+  - type: custom:auto-entities
+    card:
+      type: entities
+      title: "🔑 All My Accessible Doors"
+      show_header_toggle: false
+    filter:
+      include:
+        - entity_id: "button.esp_rfid_*_unlock_door"
+          options:
+            type: button
+            name: this.attributes.friendly_name
+            icon: mdi:door-open
+            tap_action:
+              action: call-service
+              service: button.press
+              service_data:
+                entity_id: this.entity_id
+        - entity_id: "binary_sensor.esp_rfid_*_online"
+          options:
+            type: simple-entity
+            name: this.attributes.friendly_name
+            state_color: true
+      exclude:
+        - state: "unavailable"
+    sort:
+      method: name
+
+  # My Recent Access History
+  - type: history-graph
+    title: "📊 My Recent Door Access"
+    hours_to_show: 24
+    refresh_interval: 30
+    entities:
+      - sensor.esp_rfid_esp_rfidx_last_access
+      - sensor.esp_rfid_office_door_last_access
+
+  # Emergency Actions (if user has admin access)
+  - type: conditional
+    conditions:
+      - entity: input_boolean.esp_rfid_master_enable
+        state: "on"
+    card:
+      type: entities
+      title: "🚨 Emergency Actions"
+      show_header_toggle: false
+      entities:
+        - type: button
+          entity: script.esp_rfid_open_all_doors
+          name: "🚪 Emergency Unlock All"
+          icon: mdi:door-open-variant
+          tap_action:
+            action: call-service
+            service: script.esp_rfid_open_all_doors
+            confirmation:
+              text: "Are you sure you want to unlock ALL doors?"
+
+  # Access Log for current user
+  - type: logbook
+    title: "📝 My Access Log"
+    hours_to_show: 168
+    entities:
+      - sensor.esp_rfid_esp_rfidx_last_access
+      - sensor.esp_rfid_office_door_last_access
+      - button.esp_rfid_esp_rfidx_unlock_door
+      - button.esp_rfid_office_door_unlock_door
+
+  # Help & Info
+  - type: markdown
+    content: |
+      ## ℹ️ How to Use
+      
+      **🔑 Unlock Doors:** Tap the unlock button for any door you have access to
+      
+      **📱 Physical Access:** Use your registered RFID card at any door
+      
+      **🕐 Access History:** View your recent door access in the history section
+      
+      **⚠️ Issues?** Contact your system administrator if you need access to additional doors
+      
+      ---
+      
+      *Your access permissions are managed by the ESP-RFID system administrator* 

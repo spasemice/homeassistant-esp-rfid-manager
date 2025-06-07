@@ -125,8 +125,34 @@
             <!-- Access Logs -->
             <div class="col-md-6">
                 <div class="card">
-                    <div class="card-header">
+                    <div class="card-header d-flex justify-content-between align-items-center">
                         <h5><i class="bi bi-clock-history"></i> Recent Access Logs</h5>
+                        <div class="dropdown">
+                            <button class="btn btn-sm btn-outline-primary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                                <i class="bi bi-house-gear"></i> Home Assistant
+                            </button>
+                            <ul class="dropdown-menu">
+                                <li><a class="dropdown-item" href="/api/homeassistant/config" target="_blank">
+                                    <i class="bi bi-download"></i> Download Config YAML
+                                </a></li>
+                                <li><a class="dropdown-item" href="/api/homeassistant/dashboard" target="_blank">
+                                    <i class="bi bi-graph-up"></i> Download Dashboard YAML
+                                </a></li>
+                                <li><a class="dropdown-item" href="/api/homeassistant/user-doors?username=admin" target="_blank">
+                                    <i class="bi bi-person-check"></i> Check User Door Access
+                                </a></li>
+                                <li><a class="dropdown-item" href="/api/homeassistant/access-history?limit=20" target="_blank">
+                                    <i class="bi bi-clock-history"></i> View Access History API
+                                </a></li>
+                                <li><hr class="dropdown-divider"></li>
+                                <li><span class="dropdown-item-text text-muted small">
+                                    Auto-discovery via MQTT enabled
+                                </span></li>
+                                <li><span class="dropdown-item-text text-muted small">
+                                    Button entities for door unlock
+                                </span></li>
+                            </ul>
+                        </div>
                     </div>
                     <div class="card-body" style="max-height: 400px; overflow-y: auto;">
                         <div id="access-logs">
@@ -182,10 +208,11 @@
                             </div>
                         </div>
                         <div class="mb-3">
-                            <label for="userDevice" class="form-label">Device</label>
-                            <select class="form-select" id="userDevice" required>
-                                <option value="">Select Device</option>
-                            </select>
+                            <label class="form-label">Select Doors/Devices</label>
+                            <div id="userDevicesList" class="border rounded p-2" style="max-height: 200px; overflow-y: auto;">
+                                <!-- Device checkboxes will be loaded here -->
+                            </div>
+                            <div class="form-text">Select one or more devices/doors for this user</div>
                         </div>
                         <div class="mb-3">
                             <label for="userAccess" class="form-label">Access Type</label>
@@ -399,7 +426,8 @@
                 // Also handle for bulk assign modal
                 const bulkModal = document.getElementById('bulkAssignModal');
                 if (bulkModal && bulkModal.classList.contains('show')) {
-                    const uid = data.payload.data;
+                    // Extract only the UID part (before space) from data like "8d0a0186 34"
+                    const uid = data.payload.data ? data.payload.data.split(' ')[0] : '';
                     document.getElementById('bulkUserUID').value = uid;
                     
                     // Show success feedback
@@ -409,6 +437,58 @@
                         uidField.classList.remove('bg-success', 'bg-opacity-25');
                     }, 2000);
                 }
+            }
+        });
+
+        // Handle card scan results (log format)
+        socket.on('card_scan_result', function(data) {
+            console.log('Card scan result:', data);
+            
+            const uid = data.uid;
+            const username = data.username;
+            const isRegistered = data.is_registered;
+            
+            // Handle for Add User modal
+            const addUserModal = document.getElementById('addUserModal');
+            if (addUserModal && addUserModal.classList.contains('show')) {
+                document.getElementById('userUID').value = uid;
+                
+                // Auto-check the device if available
+                const deviceCheckbox = document.getElementById(`userDevice_${data.hostname}`);
+                if (deviceCheckbox) {
+                    deviceCheckbox.checked = true;
+                }
+                
+                // Show different feedback based on registration status
+                const uidField = document.getElementById('userUID');
+                if (isRegistered) {
+                    uidField.classList.add('bg-warning', 'bg-opacity-25');
+                    showCardAlreadyRegisteredWarning(username, data.hostname);
+                } else {
+                    uidField.classList.add('bg-success', 'bg-opacity-25');
+                }
+                
+                setTimeout(() => {
+                    uidField.classList.remove('bg-warning', 'bg-success', 'bg-opacity-25');
+                }, 3000);
+            }
+            
+            // Handle for Bulk Assign modal
+            const bulkModal = document.getElementById('bulkAssignModal');
+            if (bulkModal && bulkModal.classList.contains('show')) {
+                document.getElementById('bulkUserUID').value = uid;
+                
+                const uidField = document.getElementById('bulkUserUID');
+                if (isRegistered) {
+                    uidField.classList.add('bg-warning', 'bg-opacity-25');
+                    alert(`Card already registered to: ${username} on ${data.hostname}`);
+                } else {
+                    uidField.classList.add('bg-success', 'bg-opacity-25');
+                }
+                
+                setTimeout(() => {
+                    uidField.classList.remove('bg-warning', 'bg-success', 'bg-opacity-25');
+                }, 3000);
             }
         });
 
@@ -433,11 +513,11 @@
                 .then(devices => {
                     const container = document.getElementById('devices-container');
                     const deviceFilter = document.getElementById('device-filter');
-                    const userDevice = document.getElementById('userDevice');
+                    const userDevicesList = document.getElementById('userDevicesList');
                     
                     container.innerHTML = '';
                     deviceFilter.innerHTML = '<option value="">All Devices</option>';
-                    userDevice.innerHTML = '<option value="">Select Device</option>';
+                    userDevicesList.innerHTML = '';
                     
                     devices.forEach(device => {
                         // Device card
@@ -470,15 +550,24 @@
                         container.appendChild(deviceCard);
                         
                         // Add to filters
+                        // Add to filter dropdown
                         const filterOption = document.createElement('option');
                         filterOption.value = device.hostname;
                         filterOption.textContent = device.hostname;
                         deviceFilter.appendChild(filterOption);
                         
-                        const deviceOption = document.createElement('option');
-                        deviceOption.value = device.hostname;
-                        deviceOption.textContent = device.hostname;
-                        userDevice.appendChild(deviceOption);
+                        // Add to user devices checkboxes
+                        const deviceCheckbox = document.createElement('div');
+                        deviceCheckbox.className = 'form-check';
+                        deviceCheckbox.innerHTML = `
+                            <input class="form-check-input" type="checkbox" value="${device.hostname}" id="userDevice_${device.hostname}">
+                            <label class="form-check-label" for="userDevice_${device.hostname}">
+                                <strong>${device.hostname}</strong> 
+                                <small class="text-muted">(${device.ip_address})</small>
+                                <span class="badge ${device.status === 'online' ? 'bg-success' : 'bg-danger'} ms-2">${device.status}</span>
+                            </label>
+                        `;
+                        userDevicesList.appendChild(deviceCheckbox);
                     });
                 })
                 .catch(error => console.error('Error loading devices:', error));
@@ -666,7 +755,8 @@
 
         // Handle unknown card scanned
         function handleUnknownCardScanned(payload) {
-            const uid = payload.data;
+            // Extract only the UID part (before space) from data like "8d0a0186 34"
+            const uid = payload.data ? payload.data.split(' ')[0] : '';
             const hostname = payload.hostname;
             
             // Check if Add User modal is open 
@@ -675,13 +765,10 @@
                 // Auto-fill the UID field
                 document.getElementById('userUID').value = uid;
                 
-                // Auto-select the device if available
-                const deviceSelect = document.getElementById('userDevice');
-                for (let option of deviceSelect.options) {
-                    if (option.value === hostname) {
-                        deviceSelect.value = hostname;
-                        break;
-                    }
+                // Auto-check the device if available
+                const deviceCheckbox = document.getElementById(`userDevice_${hostname}`);
+                if (deviceCheckbox) {
+                    deviceCheckbox.checked = true;
                 }
                 
                 // Show success feedback
@@ -733,30 +820,46 @@
             return warningDiv;
         }
 
+        // Show warning when card is already registered
+        function showCardAlreadyRegisteredWarning(username, hostname) {
+            const warningDiv = document.getElementById('cardDuplicateWarning') || createCardWarningDiv();
+            warningDiv.innerHTML = `
+                <div class="alert alert-warning alert-dismissible fade show" role="alert">
+                    <strong>Card Already Registered!</strong> This card belongs to user <strong>${username}</strong> on device <strong>${hostname}</strong>.
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            `;
+            warningDiv.classList.remove('d-none');
+        }
+
         // Add user
         function addUser() {
             const username = document.getElementById('userName').value;
             const uid = document.getElementById('userUID').value;
-            const device = document.getElementById('userDevice').value;
             const acctype = document.getElementById('userAccess').value;
             const validFrom = document.getElementById('validFrom').value;
             const validUntil = document.getElementById('validUntil').value;
             
-            if (!username || !uid || !device) {
-                alert('Please fill in all required fields');
+            // Get selected devices
+            const selectedDevices = [];
+            const checkboxes = document.querySelectorAll('#userDevicesList input[type="checkbox"]:checked');
+            checkboxes.forEach(cb => selectedDevices.push(cb.value));
+            
+            if (!username || !uid || selectedDevices.length === 0) {
+                alert('Please fill in all required fields and select at least one device');
                 return;
             }
             
             const data = {
                 username: username,
                 uid: uid,
-                device_hostname: device,
+                devices: selectedDevices,
                 acctype: parseInt(acctype),
                 valid_since: validFrom ? Math.floor(new Date(validFrom).getTime() / 1000) : 0,
                 valid_until: validUntil ? Math.floor(new Date(validUntil).getTime() / 1000) : 0
             };
             
-            fetch('/api/users', {
+            fetch('/api/users/bulk-assign', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -765,13 +868,33 @@
             })
             .then(response => response.json())
             .then(result => {
-                if (result.error) {
-                    alert('Error: ' + result.error);
+                if (result.results) {
+                    let successCount = 0;
+                    let errorCount = 0;
+                    let message = 'User assignment results:\n\n';
+                    
+                    result.results.forEach(res => {
+                        if (res.status === 'success') {
+                            successCount++;
+                            message += `✓ ${res.device}: ${res.message}\n`;
+                        } else {
+                            errorCount++;
+                            message += `✗ ${res.device}: ${res.message}\n`;
+                        }
+                    });
+                    
+                    message += `\nSummary: ${successCount} successful, ${errorCount} failed`;
+                    alert(message);
+                    
+                    if (successCount > 0) {
+                        bootstrap.Modal.getInstance(document.getElementById('addUserModal')).hide();
+                        document.getElementById('addUserForm').reset();
+                        // Uncheck all checkboxes
+                        document.querySelectorAll('#userDevicesList input[type="checkbox"]').forEach(cb => cb.checked = false);
+                        loadUsers();
+                    }
                 } else {
-                    bootstrap.Modal.getInstance(document.getElementById('addUserModal')).hide();
-                    document.getElementById('addUserForm').reset();
-                    loadUsers();
-                    alert('User added successfully!');
+                    alert('Error: ' + (result.error || 'Unknown error'));
                 }
             })
             .catch(error => {

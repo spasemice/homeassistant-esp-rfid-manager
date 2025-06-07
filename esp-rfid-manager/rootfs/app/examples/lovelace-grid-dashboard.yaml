@@ -1,0 +1,233 @@
+# ESP-RFID Manager - Grid Dashboard
+# Copy this configuration to your Lovelace dashboard
+
+type: vertical-stack
+cards:
+  # Header
+  - type: markdown
+    content: |
+      # 🚪 ESP-RFID Access Control
+      **Real-time monitoring and control for all your ESP-RFID devices**
+      
+  # Real-time Status Grid
+  - type: grid
+    square: false
+    columns: 3
+    cards:
+      # Example Door 1 - Replace with your actual device hostnames
+      - type: custom:button-card
+        entity: binary_sensor.esp_rfid_esp_rfidx_online
+        name: "Main Door"
+        show_state: false
+        show_icon: true
+        icon: mdi:door
+        layout: vertical
+        tap_action:
+          action: more-info
+        styles:
+          card:
+            - height: 140px
+            - border-radius: 15px
+            - box-shadow: 0 4px 8px rgba(0,0,0,0.1)
+          name:
+            - font-size: 16px
+            - font-weight: bold
+            - margin-top: 10px
+          icon:
+            - width: 40px
+            - height: 40px
+            - color: |
+                [[[
+                  if (entity.state === 'on') return '#4CAF50';
+                  else return '#F44336';
+                ]]]
+        custom_fields:
+          status:
+            - position: absolute
+            - top: 10px
+            - right: 10px
+            - font-size: 12px
+            - padding: 2px 8px
+            - border-radius: 10px
+            - background: |
+                [[[
+                  if (entity.state === 'on') return '#4CAF50';
+                  else return '#F44336';
+                ]]]
+            - color: white
+            - content: |
+                [[[
+                  return entity.state === 'on' ? 'Online' : 'Offline';
+                ]]]
+          last_access:
+            - position: absolute
+            - bottom: 10px
+            - left: 10px
+            - right: 10px
+            - font-size: 11px
+            - color: '#666'
+            - text-align: center
+            - content: |
+                [[[
+                  const lastAccess = states['sensor.esp_rfid_esp_rfidx_last_access'];
+                  if (lastAccess && lastAccess.state && lastAccess.state !== 'unavailable') {
+                    return `Last: ${lastAccess.state}`;
+                  } else {
+                    return 'No recent access';
+                  }
+                ]]]
+        card_size: 1
+
+      # Door 2 - Office
+      - type: custom:button-card
+        entity: binary_sensor.esp_rfid_office_door_online
+        name: "Office Door"
+        show_state: false
+        show_icon: true
+        icon: mdi:door-closed
+        layout: vertical
+        tap_action:
+          action: more-info
+        styles:
+          card:
+            - height: 140px
+            - border-radius: 15px
+            - box-shadow: 0 4px 8px rgba(0,0,0,0.1)
+          name:
+            - font-size: 16px
+            - font-weight: bold
+            - margin-top: 10px
+          icon:
+            - width: 40px
+            - height: 40px
+            - color: |
+                [[[
+                  if (entity.state === 'on') return '#4CAF50';
+                  else return '#F44336';
+                ]]]
+        custom_fields:
+          status:
+            - position: absolute
+            - top: 10px
+            - right: 10px
+            - font-size: 12px
+            - padding: 2px 8px
+            - border-radius: 10px
+            - background: |
+                [[[
+                  if (entity.state === 'on') return '#4CAF50';
+                  else return '#F44336';
+                ]]]
+            - color: white
+            - content: |
+                [[[
+                  return entity.state === 'on' ? 'Online' : 'Offline';
+                ]]]
+          last_access:
+            - position: absolute
+            - bottom: 10px
+            - left: 10px
+            - right: 10px
+            - font-size: 11px
+            - color: '#666'
+            - text-align: center
+            - content: |
+                [[[
+                  const lastAccess = states['sensor.esp_rfid_office_door_last_access'];
+                  if (lastAccess && lastAccess.state && lastAccess.state !== 'unavailable') {
+                    return `Last: ${lastAccess.state}`;
+                  } else {
+                    return 'No recent access';
+                  }
+                ]]]
+
+  # Access History Chart
+  - type: history-graph
+    title: "📊 24h Access History"
+    hours_to_show: 24
+    refresh_interval: 30
+    entities:
+      - sensor.esp_rfid_esp_rfidx_last_access
+      - sensor.esp_rfid_office_door_last_access
+
+  # Recent Events Table
+  - type: custom:auto-entities
+    card:
+      type: entities
+      title: "🕐 Recent Access Events"
+      show_header_toggle: false
+    filter:
+      include:
+        - entity_id: "sensor.esp_rfid_*_last_access"
+          options:
+            secondary_info: last-changed
+      exclude:
+        - state: "unavailable"
+        - state: "unknown"
+    sort:
+      method: last_changed
+      reverse: true
+
+  # Unknown Cards Alert
+  - type: conditional
+    conditions:
+      - entity: sensor.esp_rfid_esp_rfidx_unknown_card
+        state_not: "unavailable"
+    card:
+      type: entities
+      title: "⚠️ Unknown Cards Detected"
+      show_header_toggle: false
+      state_color: true
+      entities:
+        - sensor.esp_rfid_esp_rfidx_unknown_card
+        - sensor.esp_rfid_office_door_unknown_card
+
+  # Quick Actions - User-specific door access
+  - type: horizontal-stack
+    cards:
+      # These buttons will only work if the HA user has access to these doors
+      - type: entity
+        entity: button.esp_rfid_esp_rfidx_unlock_door
+        name: "🚪 Unlock Main Door"
+        tap_action:
+          action: call-service
+          service: button.press
+          service_data:
+            entity_id: button.esp_rfid_esp_rfidx_unlock_door
+        
+      - type: entity
+        entity: button.esp_rfid_office_door_unlock_door
+        name: "🚪 Unlock Office"
+        tap_action:
+          action: call-service
+          service: button.press
+          service_data:
+            entity_id: button.esp_rfid_office_door_unlock_door
+        
+      - type: button
+        name: "🔄 Sync All"
+        icon: mdi:sync
+        tap_action:
+          action: call-service
+          service: script.esp_rfid_sync_all_users
+
+  # User Access Panel - Shows only doors the user can access
+  - type: custom:auto-entities
+    card:
+      type: entities
+      title: "🔑 My Door Access"
+      show_header_toggle: false
+    filter:
+      include:
+        - entity_id: "button.esp_rfid_*_unlock_door"
+          options:
+            type: button
+            tap_action:
+              action: call-service
+              service: button.press
+              service_data:
+                entity_id: this.entity_id
+      exclude:
+        - state: "unavailable"
+    sort:
+      method: name 

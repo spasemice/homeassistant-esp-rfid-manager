@@ -236,6 +236,19 @@ class ESPRFIDManager:
     
     def update_device_status(self, hostname: str, ip_address: str):
         """Update device status in database"""
+        was_offline = False
+        
+        # Check if device was offline
+        if hostname in self.connected_devices:
+            was_offline = self.connected_devices[hostname]['status'] == 'offline'
+        else:
+            # Check in database
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT status FROM devices WHERE hostname = ?', (hostname,))
+                row = cursor.fetchone()
+                was_offline = row and row['status'] == 'offline'
+        
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -249,6 +262,39 @@ class ESPRFIDManager:
             'last_seen': datetime.now(),
             'status': 'online'
         }
+        
+        # Log when device comes back online
+        if was_offline:
+            logger.info(f"{hostname} Door Status changed to online")
+            # Update HA sensors with detailed attributes
+            try:
+                timestamp = datetime.now().isoformat()
+                
+                # Online sensor attributes
+                online_attributes = {
+                    "hostname": hostname,
+                    "ip_address": ip_address,
+                    "last_seen": timestamp,
+                    "status": "online",
+                    "status_change": timestamp,
+                    "previous_status": "offline"
+                }
+                
+                # Door status attributes
+                door_attributes = {
+                    "hostname": hostname,
+                    "ip_address": ip_address,
+                    "last_status_change": timestamp,
+                    "status": "ready",
+                    "device_online": True
+                }
+                
+                self.mqtt_client.publish(f"homeassistant/binary_sensor/esp_rfid_{hostname}_online/state", "ON")
+                self.mqtt_client.publish(f"homeassistant/binary_sensor/esp_rfid_{hostname}_online/attributes", json.dumps(online_attributes))
+                self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_door_status/state", "ready")
+                self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_door_status/attributes", json.dumps(door_attributes))
+            except Exception as e:
+                logger.error(f"Failed to update HA sensors for online device {hostname}: {e}")
         
         # Send Home Assistant MQTT Discovery for this device
         self.send_ha_discovery(hostname, ip_address)
@@ -437,6 +483,8 @@ class ESPRFIDManager:
         if username == 'Unknown':
             self.update_ha_sensors(hostname, 'unknown_card', {
                 'uid': uid,
+                'hostname': hostname,
+                'door_name': door_name,
                 'timestamp': datetime.now().isoformat()
             })
 
@@ -528,24 +576,25 @@ class ESPRFIDManager:
         
         device_info = {
             "identifiers": [f"esp_rfid_{hostname}"],
-            "name": f"ESP-RFID {hostname}",
+            "name": f"{hostname}",
             "model": "ESP-RFID",
-            "manufacturer": "ESP-RFID",
+            "manufacturer": "ESP-RFID", 
             "sw_version": "1.0"
         }
         
-        # Door Status Sensor
+        # Door Status Sensor  
         door_status_config = {
-            "name": f"ESP-RFID {hostname} Door Status",
+            "name": f"{hostname} Door",
             "unique_id": f"esp_rfid_{hostname}_door_status",
             "state_topic": f"homeassistant/sensor/esp_rfid_{hostname}_door_status/state",
+            "json_attributes_topic": f"homeassistant/sensor/esp_rfid_{hostname}_door_status/attributes",
             "icon": "mdi:door",
             "device": device_info
         }
         
         # Last Access Sensor
         last_access_config = {
-            "name": f"ESP-RFID {hostname} Last Access",
+            "name": f"{hostname} Last Access",
             "unique_id": f"esp_rfid_{hostname}_last_access",
             "state_topic": f"homeassistant/sensor/esp_rfid_{hostname}_last_access/state",
             "json_attributes_topic": f"homeassistant/sensor/esp_rfid_{hostname}_last_access/attributes",
@@ -555,10 +604,11 @@ class ESPRFIDManager:
         
         # Device Online Binary Sensor
         online_config = {
-            "name": f"ESP-RFID {hostname} Online",
+            "name": f"{hostname} Online",
             "unique_id": f"esp_rfid_{hostname}_online",
             "state_topic": f"homeassistant/binary_sensor/esp_rfid_{hostname}_online/state",
-            "payload_on": "ON",
+            "json_attributes_topic": f"homeassistant/binary_sensor/esp_rfid_{hostname}_online/attributes",
+            "payload_on": "ON", 
             "payload_off": "OFF",
             "device_class": "connectivity",
             "icon": "mdi:wifi",
@@ -567,7 +617,7 @@ class ESPRFIDManager:
         
         # Unknown Card Event
         unknown_card_config = {
-            "name": f"ESP-RFID {hostname} Unknown Card",
+            "name": f"{hostname} Unknown Card",
             "unique_id": f"esp_rfid_{hostname}_unknown_card",
             "state_topic": f"homeassistant/sensor/esp_rfid_{hostname}_unknown_card/state",
             "json_attributes_topic": f"homeassistant/sensor/esp_rfid_{hostname}_unknown_card/attributes",
@@ -577,7 +627,7 @@ class ESPRFIDManager:
         
         # Unlock Button
         unlock_button_config = {
-            "name": f"ESP-RFID {hostname} Unlock Door",
+            "name": f"{hostname} Unlock",
             "unique_id": f"esp_rfid_{hostname}_unlock_button",
             "command_topic": f"homeassistant/button/esp_rfid_{hostname}_unlock/cmd",
             "icon": "mdi:door-open",
@@ -586,7 +636,7 @@ class ESPRFIDManager:
         
         # Access History Sensor
         access_history_config = {
-            "name": f"ESP-RFID {hostname} Access History",
+            "name": f"{hostname} Access History",
             "unique_id": f"esp_rfid_{hostname}_access_history",
             "state_topic": f"homeassistant/sensor/esp_rfid_{hostname}_access_history/state",
             "json_attributes_topic": f"homeassistant/sensor/esp_rfid_{hostname}_access_history/attributes",
@@ -612,9 +662,24 @@ class ESPRFIDManager:
             # Subscribe to button command topic
             self.mqtt_client.subscribe(f"homeassistant/button/esp_rfid_{hostname}_unlock/cmd")
             
-            # Send initial state
+            # Send initial state with attributes
+            online_attributes = {
+                "hostname": hostname,
+                "ip_address": ip_address,
+                "last_seen": datetime.now().isoformat(),
+                "status": "online"
+            }
+            door_attributes = {
+                "hostname": hostname,
+                "ip_address": ip_address,
+                "last_status_change": datetime.now().isoformat(),
+                "status": "ready"
+            }
+            
             self.mqtt_client.publish(f"homeassistant/binary_sensor/esp_rfid_{hostname}_online/state", "ON")
+            self.mqtt_client.publish(f"homeassistant/binary_sensor/esp_rfid_{hostname}_online/attributes", json.dumps(online_attributes))
             self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_door_status/state", "ready")
+            self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_door_status/attributes", json.dumps(door_attributes))
             
             self.ha_discovery_sent.add(discovery_key)
             logger.info(f"Sent Home Assistant discovery for {hostname}")
@@ -625,45 +690,70 @@ class ESPRFIDManager:
     def update_ha_sensors(self, hostname: str, event_type: str, data: Dict):
         """Update Home Assistant sensors with new data"""
         try:
+            # Get device IP for attributes
+            device_ip = self.connected_devices.get(hostname, {}).get('ip_address', 'unknown')
+            
             if event_type == 'access':
                 username = data.get('username', 'Unknown')
                 uid = data.get('uid', '')
                 access_type = data.get('access_type', 'Denied')
-                door_name = data.get('door_name', '')
+                door_name = data.get('door_name', hostname)
                 timestamp = data.get('timestamp', datetime.now().isoformat())
+                is_granted = "Denied" not in access_type
                 
                 # Update last access sensor
-                state = f"{username} ({access_type})"
-                attributes = {
+                state = f"{username}"
+                last_access_attributes = {
                     "username": username,
                     "uid": uid,
                     "access_type": access_type,
                     "door_name": door_name,
+                    "hostname": hostname,
+                    "ip_address": device_ip,
                     "timestamp": timestamp,
-                    "is_granted": "Denied" not in access_type
+                    "is_granted": is_granted,
+                    "access_method": "rfid",
+                    "friendly_name": f"{username} {access_type.lower()} access to {door_name}"
                 }
                 
                 self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_last_access/state", state)
                 self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_last_access/attributes", 
-                                       json.dumps(attributes))
+                                       json.dumps(last_access_attributes))
                 
-                # Update door status
-                door_status = "granted" if "Denied" not in access_type else "denied"
+                # Update door status with detailed attributes
+                door_status = "granted" if is_granted else "denied"
+                door_status_attributes = {
+                    "hostname": hostname,
+                    "ip_address": device_ip,
+                    "last_access_user": username,
+                    "last_access_uid": uid,
+                    "last_access_type": access_type,
+                    "last_access_time": timestamp,
+                    "door_name": door_name,
+                    "status": door_status,
+                    "last_status_change": timestamp
+                }
+                
                 self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_door_status/state", door_status)
+                self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_door_status/attributes", 
+                                       json.dumps(door_status_attributes))
                 
             elif event_type == 'unknown_card':
                 uid = data.get('uid', '')
                 timestamp = data.get('timestamp', datetime.now().isoformat())
                 
-                attributes = {
+                unknown_card_attributes = {
                     "uid": uid,
                     "timestamp": timestamp,
-                    "hostname": hostname
+                    "hostname": hostname,
+                    "ip_address": device_ip,
+                    "scan_type": "unregistered_card",
+                    "friendly_name": f"Unknown card {uid} scanned on {hostname}"
                 }
                 
-                self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_unknown_card/state", uid)
+                self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_unknown_card/state", f"Unknown: {uid}")
                 self.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_unknown_card/attributes", 
-                                       json.dumps(attributes))
+                                       json.dumps(unknown_card_attributes))
                 
         except Exception as e:
             logger.error(f"Failed to update HA sensors for {hostname}: {e}")
@@ -1222,11 +1312,13 @@ def api_edit_user(user_id):
 def api_homeassistant_users():
     """Get Home Assistant users (mock implementation)"""
     # This would normally integrate with Home Assistant API
-    # For now, return mock data - you can implement HA integration later
+    # For now, return mock data based on common HA users
     mock_users = [
-        {'id': 'user.admin', 'name': 'Administrator', 'username': 'admin'},
-        {'id': 'user.spase', 'name': 'Spase Micevski', 'username': 'spase'},
-        {'id': 'user.guest', 'name': 'Guest User', 'username': 'guest'},
+        {'id': 'admin', 'name': 'Administrator', 'username': 'admin'},
+        {'id': 'spase', 'name': 'Spase Micevski', 'username': 'spase'},
+        {'id': 'family', 'name': 'Family Member', 'username': 'family'},
+        {'id': 'guest', 'name': 'Guest User', 'username': 'guest'},
+        {'id': 'visitor', 'name': 'Visitor', 'username': 'visitor'},
     ]
     return jsonify(mock_users)
 
@@ -1551,8 +1643,8 @@ def handle_stop_card_detection():
 
 # Cleanup task for offline devices
 def cleanup_offline_devices():
-    """Mark devices as offline if not seen for 5 minutes"""
-    cutoff_time = datetime.now() - timedelta(minutes=5)
+    """Mark devices as offline if not seen for 45 seconds (3x heartbeat)"""
+    cutoff_time = datetime.now() - timedelta(seconds=45)
     
     with get_db() as conn:
         cursor = conn.cursor()
@@ -1579,9 +1671,33 @@ def cleanup_offline_devices():
             manager.connected_devices[hostname]['status'] = 'offline'
         
         try:
+            timestamp = datetime.now().isoformat()
+            device_ip = manager.connected_devices.get(hostname, {}).get('ip_address', 'unknown')
+            
+            # Offline sensor attributes
+            offline_attributes = {
+                "hostname": hostname,
+                "ip_address": device_ip,
+                "last_seen": timestamp,
+                "status": "offline",
+                "status_change": timestamp,
+                "previous_status": "online"
+            }
+            
+            # Door status attributes for offline
+            door_offline_attributes = {
+                "hostname": hostname,
+                "ip_address": device_ip,
+                "last_status_change": timestamp,
+                "status": "offline",
+                "device_online": False
+            }
+            
             manager.mqtt_client.publish(f"homeassistant/binary_sensor/esp_rfid_{hostname}_online/state", "OFF")
+            manager.mqtt_client.publish(f"homeassistant/binary_sensor/esp_rfid_{hostname}_online/attributes", json.dumps(offline_attributes))
             manager.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_door_status/state", "offline")
-            logger.debug(f"Updated HA sensors for offline device: {hostname}")
+            manager.mqtt_client.publish(f"homeassistant/sensor/esp_rfid_{hostname}_door_status/attributes", json.dumps(door_offline_attributes))
+            logger.info(f"{hostname} Door Status changed to offline")
         except Exception as e:
             logger.error(f"Failed to update HA sensors for offline device {hostname}: {e}")
 

@@ -7,6 +7,49 @@
 
 ## [Unreleased]
 
+## [1.0.6] - 2025-06-07
+
+### Поправено
+- Скратени имиња во Home Assistant entities (наместо "ESP-RFID esp-rfidx Door Status" сега е "esp-rfidx Door")
+- Намален offline timeout од 5 минути на 45 секунди (3x heartbeat од 15 сек)
+- Подобрено логирање за online/offline статус промени
+
+### Подобрено
+- Пократки и почисти имиња во Home Assistant за подобра читливост
+- Побрзо детектирање на offline уреди (45 сек наместо 5 мин)
+- Подобрени лог мессиџи: `{hostname} Door Status changed to online/offline`
+- Автоматско ажурирање на HA сензори кога уредот се враќа online
+
+### Техничко
+- Промена на device naming schema во HA discovery
+- Оптимизиран offline detection алгоритам
+- Додадено online status логирање во update_device_status функцијата
+
+## [1.0.5] - 2025-06-07
+
+### Поправено
+- Комплетно отстранета "New Cards Detected" секција која се појавуваше и кога не беше потребна
+- Поправена автоматска детекција на картички во Add User модалот  
+- Отстранети сите непотребни card registration функции и модали
+
+### Подобрено
+- Додаден Home Assistant корисници dropdown во Add User модалот наместо обичен text input
+- Можност за избор помеѓу HA корисници (dropdown) или custom username (manual entry)
+- Подобрена card detection логика - работи само преку SocketIO events кога е потребна
+- Автоматско вчитување на Home Assistant корисници од API
+- Toggle опција за manual entry на custom usernames
+
+### Додадено
+- `/api/homeassistant/users` endpoint за добивање на HA корисници
+- `toggleManualEntry()` функција за switching помеѓу dropdown и manual input
+- `getSelectedUsername()` функција за добивање на избраниот username
+- `loadHomeAssistantUsers()` за автоматско вчитување на HA корисници
+
+### Техничко
+- Отстранети сите card registration табели и функции
+- Поедноставена card detection архитектура
+- Подобрена UX за избор на корисници
+
 ## [1.0.4] - 2025-06-07
 
 ### Поправено

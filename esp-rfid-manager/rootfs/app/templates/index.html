@@ -74,11 +74,7 @@
             </div>
         </div>
 
-        <!-- Card Registration Alerts -->
-        <div id="card-registrations-alert" class="alert alert-warning d-none" role="alert">
-            <h5><i class="bi bi-credit-card-2-back"></i> New Cards Detected</h5>
-            <div id="card-registrations-list"></div>
-        </div>
+
 
         <div class="row">
             <!-- Users Management -->
@@ -192,7 +188,16 @@
                     <form id="addUserForm">
                         <div class="mb-3">
                             <label for="userName" class="form-label">User Name</label>
-                            <input type="text" class="form-control" id="userName" required>
+                            <div class="input-group">
+                                <select class="form-select" id="userName" required>
+                                    <option value="">Select Home Assistant User</option>
+                                    <!-- HA users will be loaded here -->
+                                </select>
+                                <button class="btn btn-outline-secondary" type="button" onclick="toggleManualEntry()" title="Enter custom username">
+                                    <i class="bi bi-pencil"></i>
+                                </button>
+                            </div>
+                            <input type="text" class="form-control d-none" id="userNameManual" placeholder="Enter custom username">
                         </div>
                         <div class="mb-3">
                             <label for="userUID" class="form-label">Card UID</label>
@@ -412,32 +417,48 @@
         });
 
         socket.on('new_card_detected', function(data) {
-            showCardRegistration(data);
+            const uid = data.uid;
+            const hostname = data.hostname;
+            
+            // Check if Add User modal is open
+            const addUserModal = document.getElementById('addUserModal');
+            if (addUserModal && addUserModal.classList.contains('show')) {
+                // Auto-fill the UID field
+                document.getElementById('userUID').value = uid;
+                
+                // Auto-check the device if available
+                const deviceCheckbox = document.getElementById(`device_${hostname}`);
+                if (deviceCheckbox) {
+                    deviceCheckbox.checked = true;
+                }
+                
+                // Show success feedback
+                const uidField = document.getElementById('userUID');
+                uidField.classList.add('bg-success', 'bg-opacity-25');
+                setTimeout(() => {
+                    uidField.classList.remove('bg-success', 'bg-opacity-25');
+                }, 2000);
+                
+                // Check if card is already registered to another user
+                checkCardDuplicate(uid);
+            }
+            
+            // Also handle for bulk assign modal
+            const bulkModal = document.getElementById('bulkAssignModal');
+            if (bulkModal && bulkModal.classList.contains('show')) {
+                document.getElementById('bulkUserUID').value = uid;
+                
+                // Show success feedback
+                const uidField = document.getElementById('bulkUserUID');
+                uidField.classList.add('bg-success', 'bg-opacity-25');
+                setTimeout(() => {
+                    uidField.classList.remove('bg-success', 'bg-opacity-25');
+                }, 2000);
+            }
         });
 
         socket.on('mqtt_message', function(data) {
             addSystemEvent(data);
-            
-            // Handle unknown card scanning for manual user registration
-            if (data.payload && data.payload.type === 'WARN' && 
-                data.payload.desc === 'Unknown rfid tag is scanned') {
-                handleUnknownCardScanned(data.payload);
-                
-                // Also handle for bulk assign modal
-                const bulkModal = document.getElementById('bulkAssignModal');
-                if (bulkModal && bulkModal.classList.contains('show')) {
-                    // Extract only the UID part (before space) from data like "8d0a0186 34"
-                    const uid = data.payload.data ? data.payload.data.split(' ')[0] : '';
-                    document.getElementById('bulkUserUID').value = uid;
-                    
-                    // Show success feedback
-                    const uidField = document.getElementById('bulkUserUID');
-                    uidField.classList.add('bg-success', 'bg-opacity-25');
-                    setTimeout(() => {
-                        uidField.classList.remove('bg-success', 'bg-opacity-25');
-                    }, 2000);
-                }
-            }
         });
 
         // Handle card scan results (log format)
@@ -497,7 +518,6 @@
             loadDevices();
             loadUsers();
             loadAccessLogs();
-            loadCardRegistrations();
             
             // Set default datetime values
             const now = new Date();
@@ -653,47 +673,7 @@
             }
         }
 
-        // Load card registrations
-        function loadCardRegistrations() {
-            fetch('/api/card-registrations')
-                .then(response => response.json())
-                .then(registrations => {
-                    if (registrations.length > 0) {
-                        const alert = document.getElementById('card-registrations-alert');
-                        const list = document.getElementById('card-registrations-list');
-                        
-                        list.innerHTML = '';
-                        registrations.forEach(reg => {
-                            const item = document.createElement('div');
-                            item.className = 'mb-2';
-                            item.innerHTML = `
-                                <div class="card card-registration">
-                                    <div class="card-body py-2">
-                                        <div class="d-flex justify-content-between align-items-center">
-                                            <div>
-                                                <strong>UID:</strong> ${reg.uid}<br>
-                                                <small><strong>Device:</strong> ${reg.device_hostname}</small>
-                                            </div>
-                                            <button class="btn btn-primary btn-sm" onclick="showCardRegistrationModal(${reg.id}, '${reg.uid}', '${reg.device_hostname}')">
-                                                Register
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            `;
-                            list.appendChild(item);
-                        });
-                        
-                        alert.classList.remove('d-none');
-                    }
-                })
-                .catch(error => console.error('Error loading card registrations:', error));
-        }
 
-        // Show card registration
-        function showCardRegistration(data) {
-            loadCardRegistrations(); // Refresh the list
-        }
 
         // Show card registration modal
         function showCardRegistrationModal(id, uid, hostname) {
@@ -753,35 +733,7 @@
             });
         }
 
-        // Handle unknown card scanned
-        function handleUnknownCardScanned(payload) {
-            // Extract only the UID part (before space) from data like "8d0a0186 34"
-            const uid = payload.data ? payload.data.split(' ')[0] : '';
-            const hostname = payload.hostname;
-            
-            // Check if Add User modal is open 
-            const modal = document.getElementById('addUserModal');
-            if (modal && modal.classList.contains('show')) {
-                // Auto-fill the UID field
-                document.getElementById('userUID').value = uid;
-                
-                // Auto-check the device if available
-                const deviceCheckbox = document.getElementById(`userDevice_${hostname}`);
-                if (deviceCheckbox) {
-                    deviceCheckbox.checked = true;
-                }
-                
-                // Show success feedback
-                const uidField = document.getElementById('userUID');
-                uidField.classList.add('bg-success', 'bg-opacity-25');
-                setTimeout(() => {
-                    uidField.classList.remove('bg-success', 'bg-opacity-25');
-                }, 2000);
-                
-                // Check if card is already registered to another user
-                checkCardDuplicate(uid);
-            }
-        }
+
 
         // Check if card is already registered
         function checkCardDuplicate(uid) {
@@ -834,7 +786,7 @@
 
         // Add user
         function addUser() {
-            const username = document.getElementById('userName').value;
+            const username = getSelectedUsername();
             const uid = document.getElementById('userUID').value;
             const acctype = document.getElementById('userAccess').value;
             const validFrom = document.getElementById('validFrom').value;
@@ -1205,6 +1157,7 @@
                 console.log('Add User modal opened - starting card detection');
                 socket.emit('start_card_detection');
                 loadAddUserDevices();
+                loadHomeAssistantUsers();
             });
             
             addUserModal.addEventListener('hidden.bs.modal', function() {
@@ -1256,6 +1209,71 @@
                     console.error('Error loading devices:', error);
                     devicesList.innerHTML = '<div class="text-danger">Error loading devices</div>';
                 });
+        }
+
+        // Load Home Assistant users for dropdown
+        function loadHomeAssistantUsers() {
+            const userSelect = document.getElementById('userName');
+            
+            fetch('/api/homeassistant/users')
+                .then(response => response.json())
+                .then(users => {
+                    // Clear existing options except the first one
+                    userSelect.innerHTML = '<option value="">Select Home Assistant User</option>';
+                    
+                    users.forEach(user => {
+                        const option = document.createElement('option');
+                        option.value = user.username;
+                        option.textContent = `${user.name} (${user.username})`;
+                        userSelect.appendChild(option);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error loading HA users:', error);
+                    // Add fallback options if API fails
+                    userSelect.innerHTML = `
+                        <option value="">Select Home Assistant User</option>
+                        <option value="admin">Administrator (admin)</option>
+                        <option value="spase">Spase Micevski (spase)</option>
+                        <option value="guest">Guest User (guest)</option>
+                    `;
+                });
+        }
+
+        // Toggle between dropdown and manual entry
+        function toggleManualEntry() {
+            const dropdown = document.getElementById('userName');
+            const manualInput = document.getElementById('userNameManual');
+            const isManual = dropdown.classList.contains('d-none');
+            
+            if (isManual) {
+                // Switch to dropdown
+                dropdown.classList.remove('d-none');
+                manualInput.classList.add('d-none');
+                manualInput.value = '';
+                manualInput.removeAttribute('required');
+                dropdown.setAttribute('required', '');
+            } else {
+                // Switch to manual input
+                dropdown.classList.add('d-none');
+                manualInput.classList.remove('d-none');
+                dropdown.value = '';
+                dropdown.removeAttribute('required');
+                manualInput.setAttribute('required', '');
+                manualInput.focus();
+            }
+        }
+
+        // Get selected username (from dropdown or manual input)
+        function getSelectedUsername() {
+            const dropdown = document.getElementById('userName');
+            const manualInput = document.getElementById('userNameManual');
+            
+            if (dropdown.classList.contains('d-none')) {
+                return manualInput.value;
+            } else {
+                return dropdown.value;
+            }
         }
 
         // Device filter change

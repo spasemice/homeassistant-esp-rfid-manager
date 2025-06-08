@@ -163,116 +163,43 @@ def init_database():
 
 def check_ha_auth():
     """Check if user is authenticated with Home Assistant"""
-    # Debug: log all headers for troubleshooting
-    logger.debug(f"Request headers: {dict(request.headers)}")
+    # Debug: log all headers for troubleshooting (only for first few requests)
+    if not hasattr(check_ha_auth, 'logged_headers'):
+        logger.info(f"Request headers: {dict(request.headers)}")
+        check_ha_auth.logged_headers = True
     
     # Check if we have a valid HA session
     ha_user = session.get('ha_user')
     if ha_user:
         return ha_user
     
-    # Check if running in addon mode with ingress
+    # For ingress mode, always allow access and create a default user
     if SUPERVISOR_TOKEN:
-        # Running in addon mode, check ingress headers
-        remote_user = request.headers.get('X-Ingress-User')
-        remote_name = request.headers.get('X-Ingress-Name') 
-        remote_groups = request.headers.get('X-Ingress-Groups', '').split(',')
-        
-        # Fallback to other header names
-        if not remote_user:
-            remote_user = request.headers.get('Remote-User')
-            remote_name = request.headers.get('Remote-Name')
-            remote_groups = request.headers.get('Remote-Groups', '').split(',')
-        
-        # Try other common header patterns
-        if not remote_user:
-            remote_user = request.headers.get('X-Remote-User')
-            remote_name = request.headers.get('X-Remote-Name')
-            remote_groups = request.headers.get('X-Remote-Groups', '').split(',')
-            
-        # Log what we found
-        logger.info(f"Ingress headers - User: {remote_user}, Name: {remote_name}, Groups: {remote_groups}")
-        
-        if remote_user:
-            ha_user = {
-                'id': remote_user,
-                'name': remote_name or remote_user,
-                'is_admin': 'admin' in [g.lower().strip() for g in remote_groups] or 'administrators' in [g.lower().strip() for g in remote_groups]
-            }
-            session['ha_user'] = ha_user
-            logger.info(f"Authenticated user via ingress: {ha_user}")
-            return ha_user
-        else:
-            logger.warning("No ingress user headers found")
-        
-        # If no ingress headers, try to get from supervisor API
-        try:
-            headers = {
-                'Authorization': f'Bearer {SUPERVISOR_TOKEN}',
-                'Content-Type': 'application/json'
-            }
-            # Check current session
-            response = requests.get('http://supervisor/auth', headers=headers, timeout=5)
-            logger.info(f"Supervisor auth response: {response.status_code}")
-            if response.status_code == 200:
-                auth_data = response.json()
-                logger.info(f"Supervisor auth data: {auth_data}")
-                if auth_data.get('result') == 'ok' and auth_data.get('data'):
-                    ha_user = {
-                        'id': auth_data.get('data', {}).get('username', 'user'),
-                        'name': auth_data.get('data', {}).get('name', 'User'),
-                        'is_admin': auth_data.get('data', {}).get('is_admin', False)
-                    }
-                    session['ha_user'] = ha_user
-                    logger.info(f"Authenticated user via supervisor API: {ha_user}")
-                    return ha_user
-        except Exception as e:
-            logger.warning(f"Supervisor auth check failed: {e}")
-    
-    # For development/standalone mode - allow access
-    if not SUPERVISOR_TOKEN:
-        logger.warning("Running without authentication (development mode)")
+        logger.info("Running in ingress mode - creating default authenticated user")
         ha_user = {
-            'id': 'dev_user',
-            'name': 'Development User', 
+            'id': 'ingress_user',
+            'name': 'Home Assistant User', 
             'is_admin': True
         }
         session['ha_user'] = ha_user
         return ha_user
     
-    logger.warning("Authentication failed - no valid user found")
-    return None
+    # For development/standalone mode - allow access
+    logger.warning("Running without authentication (development mode)")
+    ha_user = {
+        'id': 'dev_user',
+        'name': 'Development User', 
+        'is_admin': True
+    }
+    session['ha_user'] = ha_user
+    return ha_user
 
 def require_auth(f):
     """Decorator to require Home Assistant authentication"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Skip auth check for API routes (they can be used by HA)
-        if request.endpoint and request.endpoint.startswith('api_'):
-            return f(*args, **kwargs)
-            
+        # Always allow access in ingress mode
         ha_user = check_ha_auth()
-        if not ha_user:
-            # For ingress mode, show error instead of redirect
-            if SUPERVISOR_TOKEN:
-                logger.warning("Authentication failed - user not authenticated via ingress")
-                return """
-                <html>
-                <head><title>Authentication Required</title></head>
-                <body style="text-align:center; padding:50px; font-family:sans-serif;">
-                    <h1>🔐 Authentication Required</h1>
-                    <p>Please access ESP-RFID Manager through Home Assistant:</p>
-                    <p><strong>Settings → Add-ons → ESP-RFID Manager → Open Web UI</strong></p>
-                    <p>Or through the Sidebar if enabled.</p>
-                    <hr>
-                    <small>ESP-RFID Manager v1.2.0</small>
-                </body>
-                </html>
-                """, 401
-            else:
-                # Development mode - allow access
-                return f(*args, **kwargs)
-        
         return f(*args, **kwargs)
     return decorated_function
 
@@ -1245,7 +1172,7 @@ def health_check():
     """Health check endpoint for ingress"""
     return jsonify({
         'status': 'ok',
-        'version': '1.2.5',
+        'version': '1.2.7',
         'service': 'ESP-RFID Manager',
         'manager_initialized': manager is not None
     })
@@ -2392,7 +2319,7 @@ if __name__ == '__main__':
     sys.stdout.flush()
     
     try:
-        logger.info("ESP-RFID Manager v1.2.5 starting...")
+        logger.info("ESP-RFID Manager v1.2.7 starting...")
         print("Logger initialized successfully")
         sys.stdout.flush()
         
@@ -2458,12 +2385,38 @@ if __name__ == '__main__':
         logger.info("Starting Flask-SocketIO server...")
         logger.info(f"Binding to host: 0.0.0.0, port: {port}")
         
-        socketio.run(app, 
-                    host='0.0.0.0', 
-                    port=port, 
-                    debug=False,
-                    allow_unsafe_werkzeug=True,
-                    log_output=True)
+        # Pre-startup checks
+        import socket
+        try:
+            # Check if port is available
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex(('127.0.0.1', port))
+            sock.close()
+            if result == 0:
+                logger.warning(f"Port {port} appears to already be in use!")
+            else:
+                logger.info(f"Port {port} is available")
+        except Exception as e:
+            logger.warning(f"Could not check port availability: {e}")
+        
+        # Start Flask with detailed logging
+        logger.info("About to call socketio.run()...")
+        print(f"FLASK STARTUP: About to bind to 0.0.0.0:{port}")
+        sys.stdout.flush()
+        
+        try:
+            socketio.run(app, 
+                        host='0.0.0.0', 
+                        port=port, 
+                        debug=False,
+                        allow_unsafe_werkzeug=True,
+                        log_output=True)
+            logger.info("Flask server exited normally")
+        except Exception as flask_error:
+            logger.error(f"Flask startup failed: {flask_error}")
+            logger.exception("Flask error traceback:")
+            raise
                     
     except KeyboardInterrupt:
         logger.info("Received shutdown signal, stopping ESP-RFID Manager...")

@@ -57,5 +57,21 @@ fi
 cd /app
 bashio::log.info "Changing to /app directory and starting Python application..."
 
-# Run with verbose output for debugging
-python3 -u app.py 2>&1 
+# Add timeout and monitoring
+bashio::log.info "Starting Python with timeout monitoring..."
+
+# Run with timeout to see if it hangs
+timeout 30 python3 -u app.py 2>&1 &
+PID=$!
+
+# Monitor the process
+bashio::log.info "Python PID: $PID"
+sleep 5
+
+if kill -0 $PID 2>/dev/null; then
+    bashio::log.info "Python process is running, waiting for Flask startup..."
+    wait $PID
+else
+    bashio::log.error "Python process died unexpectedly"
+    exit 1
+fi 

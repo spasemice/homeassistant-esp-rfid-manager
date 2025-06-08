@@ -1807,7 +1807,7 @@
             const devicesList = document.getElementById('userDevicesList');
             devicesList.innerHTML = '<div class="text-muted">Loading devices...</div>';
             
-            fetch('/api/devices')
+            fetch(getApiUrl('/api/devices'))
                 .then(response => response.json())
                 .then(devices => {
                     devicesList.innerHTML = '';

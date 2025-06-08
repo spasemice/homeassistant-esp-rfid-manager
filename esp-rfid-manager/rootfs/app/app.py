@@ -2502,20 +2502,45 @@ if __name__ == '__main__':
         try:
             process = psutil.Process()
             memory_info = process.memory_info()
-            logger.info(f"Memory usage: RSS={memory_info.rss/1024/1024:.1f}MB, VMS={memory_info.vms/1024/1024:.1f}MB")
+            cpu_percent = process.cpu_percent()
+            threads = process.num_threads()
+            
+            logger.info(f"🖥️ System stats: Memory RSS={memory_info.rss/1024/1024:.1f}MB, VMS={memory_info.vms/1024/1024:.1f}MB, CPU={cpu_percent:.1f}%, Threads={threads}")
+            
+            # Check for high memory usage
+            if memory_info.rss > 200 * 1024 * 1024:  # 200MB
+                logger.warning(f"⚠️ High memory usage detected: {memory_info.rss/1024/1024:.1f}MB")
+                
+            # Log connected devices count
+            if manager and hasattr(manager, 'connected_devices'):
+                device_count = len(manager.connected_devices)
+                logger.info(f"📱 Connected devices in memory: {device_count}")
+                
         except Exception as e:
             logger.warning(f"Could not get memory info: {e}")
     
     # Graceful shutdown handler
     def signal_handler(signum, frame):
-        logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+        signal_names = {15: 'SIGTERM', 2: 'SIGINT', 9: 'SIGKILL'}
+        signal_name = signal_names.get(signum, f'SIGNAL_{signum}')
+        
+        logger.warning(f"🚨 Received {signal_name} (signal {signum}), initiating graceful shutdown...")
+        
+        # Log shutdown reason
+        if signum == 15:  # SIGTERM
+            logger.warning("🔄 SIGTERM received - likely Home Assistant restart/addon restart")
+        elif signum == 2:  # SIGINT
+            logger.warning("⚡ SIGINT received - likely Ctrl+C or manual interrupt")
+        
         if 'manager' in globals() and manager:
             try:
+                log_memory_usage()  # Final memory log
+                
                 if manager.scheduler:
                     manager.scheduler.shutdown(wait=False)
                 if manager.mqtt_client:
                     manager.mqtt_client.disconnect()
-                logger.info("Manager resources cleaned up")
+                logger.info("Manager resources cleaned up successfully")
             except Exception as e:
                 logger.error(f"Error during cleanup: {e}")
         sys.exit(0)
@@ -2539,7 +2564,7 @@ if __name__ == '__main__':
     atexit.register(cleanup_on_exit)
     
     try:
-        logger.info("ESP-RFID Manager v1.5.5 starting...")
+        logger.info("ESP-RFID Manager v1.5.6 starting...")
         print("Logger initialized successfully")
         sys.stdout.flush()
         

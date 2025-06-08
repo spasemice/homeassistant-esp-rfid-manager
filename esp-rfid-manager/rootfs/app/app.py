@@ -163,49 +163,50 @@ def init_database():
 
 def check_ha_auth():
     """Check if user is authenticated with Home Assistant"""
-    # Debug: log all headers for troubleshooting (only for first few requests)
-    if not hasattr(check_ha_auth, 'logged_headers'):
-        logger.info(f"Request headers: {dict(request.headers)}")
-        check_ha_auth.logged_headers = True
-    
-    # Check if we have a valid HA session
-    ha_user = session.get('ha_user')
-    if ha_user:
-        return ha_user
-    
-    # For ingress mode, always allow access and create a default user
-    if SUPERVISOR_TOKEN:
-        logger.info("Running in ingress mode - creating default authenticated user")
+    try:
+        # Check if we have a valid HA session
+        ha_user = session.get('ha_user')
+        if ha_user:
+            return ha_user
+        
+        # For ingress mode, always allow access and create a default user
+        if SUPERVISOR_TOKEN:
+            ha_user = {
+                'id': 'ingress_user',
+                'name': 'Home Assistant User', 
+                'is_admin': True
+            }
+            session['ha_user'] = ha_user
+            return ha_user
+        
+        # For development/standalone mode - allow access
         ha_user = {
-            'id': 'ingress_user',
-            'name': 'Home Assistant User', 
+            'id': 'dev_user',
+            'name': 'Development User', 
             'is_admin': True
         }
         session['ha_user'] = ha_user
         return ha_user
-    
-    # For development/standalone mode - allow access
-    logger.warning("Running without authentication (development mode)")
-    ha_user = {
-        'id': 'dev_user',
-        'name': 'Development User', 
-        'is_admin': True
-    }
-    session['ha_user'] = ha_user
-    return ha_user
+    except Exception as e:
+        logger.error(f"Authentication check failed: {e}")
+        # Return default user on error
+        return {
+            'id': 'error_user',
+            'name': 'Error User', 
+            'is_admin': True
+        }
 
 def require_auth(f):
     """Decorator to require Home Assistant authentication"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Log client IP for debugging
-        if SUPERVISOR_TOKEN:
-            client_ip = request.environ.get('REMOTE_ADDR', request.remote_addr)
-            logger.info(f"Request from IP: {client_ip}")
-            # Temporarily allow all IPs to test ingress connectivity
-        
-        ha_user = check_ha_auth()
-        return f(*args, **kwargs)
+        try:
+            # Reduced logging to prevent overflow
+            ha_user = check_ha_auth()
+            return f(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Auth error in route {f.__name__}: {e}")
+            return "Authentication error", 500
     return decorated_function
 
 def get_ha_api_headers():
@@ -1131,18 +1132,20 @@ class ESPRFIDManager:
         except Exception as e:
             logger.error(f"Failed to log access to HA history: {e}")
 
-# Global manager instance
-manager = ESPRFIDManager()
+# Global manager instance (initialized at startup)
+manager = None
 
 # Flask routes
 @app.route('/')
 @require_auth
 def index():
     """Main dashboard"""
-    ha_user = check_ha_auth()
-    logger.info(f"Index route accessed by user: {ha_user}")
-    logger.info(f"Request headers: {dict(request.headers)}")
-    return render_template('index.html', ha_user=ha_user)
+    try:
+        ha_user = check_ha_auth()
+        return render_template('index.html', ha_user=ha_user)
+    except Exception as e:
+        logger.error(f"Error rendering index: {e}")
+        return f"Error loading dashboard: {e}", 500
 
 @app.route('/logout')
 def logout():
@@ -1339,125 +1342,180 @@ def api_users():
 @app.route('/api/users', methods=['POST'])
 def api_add_user():
     """Add new user to multiple devices"""
-    data = request.get_json()
-    
-    uid = data.get('uid', '')
-    username = data.get('username', '')
-    devices = data.get('devices', [])  # Now expects list of device hostnames
-    acctype = int(data.get('acctype', 1))
-    valid_since = int(data.get('valid_since', 0))
-    valid_until = int(data.get('valid_until', 0))
-    
-    # Support legacy single device format
-    if not devices:
-        device_hostname = data.get('device_hostname', '')
-        if device_hostname:
-            devices = [device_hostname]
-    
-    if not all([uid, username, devices]):
-        return jsonify({'error': 'Missing required fields: uid, username, devices'}), 400
-    
-    results = []
-    
-    with get_db() as conn:
-        cursor = conn.cursor()
+    try:
+        # Check if manager is available
+        if not manager:
+            logger.error("ESP-RFID Manager not initialized")
+            return jsonify({'error': 'ESP-RFID Manager not available. Please refresh and try again.'}), 503
         
-        for device_hostname in devices:
-            # Get device IP
-            cursor.execute('SELECT ip_address FROM devices WHERE hostname = ?', (device_hostname,))
-            row = cursor.fetchone()
-            if not row:
-                results.append({'device': device_hostname, 'status': 'error', 'message': 'Device not found'})
-                continue
-            
-            device_ip = row['ip_address']
-            
-            # Send MQTT command to device
-            success = manager.add_user(device_ip, uid, username, acctype, valid_since, valid_until, device_hostname) if manager else False
-            
-            if success:
-                # Add to local database
-                cursor.execute('''
-                    INSERT OR REPLACE INTO users 
-                    (uid, username, device_hostname, acctype, valid_since, valid_until, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-                ''', (uid, username, device_hostname, acctype, valid_since, valid_until))
-                
-                results.append({'device': device_hostname, 'status': 'success', 'message': 'User added successfully'})
-                
-                logger.info(f"User {username} ({uid}) added to device {device_hostname} ({device_ip})")
-            else:
-                results.append({'device': device_hostname, 'status': 'error', 'message': 'Failed to send MQTT command'})
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
         
-        conn.commit()
+        uid = data.get('uid', '').strip()
+        username = data.get('username', '').strip()
+        devices = data.get('devices', [])  # Now expects list of device hostnames
+        acctype = int(data.get('acctype', 1))
+        valid_since = int(data.get('valid_since', 0))
+        valid_until = int(data.get('valid_until', 0))
+        
+        # Support legacy single device format
+        if not devices:
+            device_hostname = data.get('device_hostname', '').strip()
+            if device_hostname:
+                devices = [device_hostname]
+        
+        # Validate required fields
+        if not uid:
+            return jsonify({'error': 'UID is required'}), 400
+        if not username:
+            return jsonify({'error': 'Username is required'}), 400
+        if not devices:
+            return jsonify({'error': 'At least one device must be selected'}), 400
+        
+        results = []
+        
+        try:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                
+                for device_hostname in devices:
+                    try:
+                        # Get device IP
+                        cursor.execute('SELECT ip_address, status FROM devices WHERE hostname = ?', (device_hostname,))
+                        row = cursor.fetchone()
+                        if not row:
+                            results.append({'device': device_hostname, 'status': 'error', 'message': 'Device not found'})
+                            continue
+                        
+                        device_ip = row['ip_address']
+                        device_status = row['status']
+                        
+                        # Check if device is online
+                        if device_status != 'online':
+                            results.append({'device': device_hostname, 'status': 'error', 'message': 'Device is offline'})
+                            continue
+                        
+                        # Send MQTT command to device
+                        success = manager.add_user(device_ip, uid, username, acctype, valid_since, valid_until, device_hostname)
+                        
+                        if success:
+                            # Add to local database
+                            cursor.execute('''
+                                INSERT OR REPLACE INTO users 
+                                (uid, username, device_hostname, acctype, valid_since, valid_until, updated_at)
+                                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                            ''', (uid, username, device_hostname, acctype, valid_since, valid_until))
+                            
+                            results.append({'device': device_hostname, 'status': 'success', 'message': 'User added successfully'})
+                            
+                            logger.info(f"User {username} ({uid}) added to device {device_hostname} ({device_ip})")
+                        else:
+                            results.append({'device': device_hostname, 'status': 'error', 'message': 'Failed to send MQTT command'})
+                    
+                    except Exception as device_error:
+                        logger.error(f"Error adding user to device {device_hostname}: {device_error}")
+                        results.append({'device': device_hostname, 'status': 'error', 'message': f'Device error: {str(device_error)}'})
+                
+                conn.commit()
+        
+        except Exception as db_error:
+            logger.error(f"Database error in add_user: {db_error}")
+            return jsonify({'error': f'Database error: {str(db_error)}'}), 500
+        
+        # Check if any succeeded
+        success_count = sum(1 for r in results if r['status'] == 'success')
+        
+        if success_count > 0:
+            return jsonify({
+                'message': f'User added to {success_count}/{len(devices)} devices', 
+                'results': results
+            })
+        else:
+            return jsonify({
+                'error': 'Failed to add user to any device', 
+                'results': results
+            }), 400
     
-    # Check if any succeeded
-    success_count = sum(1 for r in results if r['status'] == 'success')
-    
-    if success_count > 0:
-        return jsonify({
-            'message': f'User added to {success_count}/{len(devices)} devices', 
-            'results': results
-        })
-    else:
-        return jsonify({
-            'error': 'Failed to add user to any device', 
-            'results': results
-        }), 500
+    except Exception as e:
+        logger.error(f"Critical error in api_add_user: {e}")
+        logger.exception("Full traceback:")
+        return jsonify({'error': f'Server error: {str(e)}'}), 500
 
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
 def api_delete_user(user_id):
     """Delete user from selected devices"""
-    data = request.get_json() or {}
-    selected_devices = data.get('devices', [])  # List of device hostnames to delete from
-    
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
-        user = cursor.fetchone()
+    try:
+        # Check if manager is available
+        if not manager:
+            logger.error("ESP-RFID Manager not initialized")
+            return jsonify({'error': 'ESP-RFID Manager not available. Please refresh and try again.'}), 503
         
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
+        data = request.get_json() or {}
+        selected_devices = data.get('devices', [])  # List of device hostnames to delete from
         
-        # If no devices specified, get all devices for this user
-        if not selected_devices:
-            cursor.execute('SELECT DISTINCT device_hostname FROM users WHERE uid = ?', (user['uid'],))
-            selected_devices = [row['device_hostname'] for row in cursor.fetchall()]
-        
-        results = []
-        
-        for device_hostname in selected_devices:
-            # Get device IP
-            cursor.execute('SELECT ip_address, status FROM devices WHERE hostname = ?', (device_hostname,))
-            device = cursor.fetchone()
-            
-            if not device:
-                results.append({'device': device_hostname, 'status': 'error', 'message': 'Device not found'})
-                continue
-            
-            # Send MQTT command only if device is online
-            if device['status'] == 'online':
-                success = manager.delete_user(device['ip_address'], user['uid'], device_hostname) if manager else False
+        try:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
+                user = cursor.fetchone()
                 
-                if success:
-                    # Remove from local database
-                    cursor.execute('DELETE FROM users WHERE uid = ? AND device_hostname = ?', (user['uid'], device_hostname))
-                    results.append({'device': device_hostname, 'status': 'success', 'message': 'User deleted successfully'})
-                else:
-                    results.append({'device': device_hostname, 'status': 'error', 'message': 'Failed to send MQTT command'})
-            else:
-                # Device is offline, just remove from database
-                cursor.execute('DELETE FROM users WHERE uid = ? AND device_hostname = ?', (user['uid'], device_hostname))
-                results.append({'device': device_hostname, 'status': 'success', 'message': 'User removed from offline device'})
+                if not user:
+                    return jsonify({'error': 'User not found'}), 404
+                
+                # If no devices specified, get all devices for this user
+                if not selected_devices:
+                    cursor.execute('SELECT DISTINCT device_hostname FROM users WHERE uid = ?', (user['uid'],))
+                    selected_devices = [row['device_hostname'] for row in cursor.fetchall()]
+                
+                results = []
+                
+                for device_hostname in selected_devices:
+                    try:
+                        # Get device IP
+                        cursor.execute('SELECT ip_address, status FROM devices WHERE hostname = ?', (device_hostname,))
+                        device = cursor.fetchone()
+                        
+                        if not device:
+                            results.append({'device': device_hostname, 'status': 'error', 'message': 'Device not found'})
+                            continue
+                        
+                        # Send MQTT command only if device is online
+                        if device['status'] == 'online':
+                            success = manager.delete_user(device['ip_address'], user['uid'], device_hostname)
+                            
+                            if success:
+                                # Remove from local database
+                                cursor.execute('DELETE FROM users WHERE uid = ? AND device_hostname = ?', (user['uid'], device_hostname))
+                                results.append({'device': device_hostname, 'status': 'success', 'message': 'User deleted successfully'})
+                            else:
+                                results.append({'device': device_hostname, 'status': 'error', 'message': 'Failed to send MQTT command'})
+                        else:
+                            # Device is offline, just remove from database
+                            cursor.execute('DELETE FROM users WHERE uid = ? AND device_hostname = ?', (user['uid'], device_hostname))
+                            results.append({'device': device_hostname, 'status': 'success', 'message': 'User removed from offline device'})
+                    
+                    except Exception as device_error:
+                        logger.error(f"Error deleting user from device {device_hostname}: {device_error}")
+                        results.append({'device': device_hostname, 'status': 'error', 'message': f'Device error: {str(device_error)}'})
+                
+                conn.commit()
+                
+                success_count = sum(1 for r in results if r['status'] == 'success')
+                
+                return jsonify({
+                    'message': f'User deletion completed: {success_count}/{len(selected_devices)} devices',
+                    'results': results
+                })
         
-        conn.commit()
-        
-        success_count = sum(1 for r in results if r['status'] == 'success')
-        
-        return jsonify({
-            'message': f'User deletion completed: {success_count}/{len(selected_devices)} devices',
-            'results': results
-        })
+        except Exception as db_error:
+            logger.error(f"Database error in delete_user: {db_error}")
+            return jsonify({'error': f'Database error: {str(db_error)}'}), 500
+    
+    except Exception as e:
+        logger.error(f"Critical error in api_delete_user: {e}")
+        logger.exception("Full traceback:")
+        return jsonify({'error': f'Server error: {str(e)}'}), 500
 
 @app.route('/api/users/<int:user_id>/devices')
 def api_get_user_devices(user_id):
@@ -1614,26 +1672,51 @@ def api_complete_card_registration(registration_id):
 @app.route('/api/doors/open', methods=['POST'])
 def api_open_door():
     """Open door"""
-    data = request.get_json()
-    device_hostname = data.get('device_hostname', '')
+    try:
+        # Check if manager is available
+        if not manager:
+            logger.error("ESP-RFID Manager not initialized")
+            return jsonify({'error': 'ESP-RFID Manager not available. Please refresh and try again.'}), 503
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        
+        device_hostname = data.get('device_hostname', '').strip()
+        
+        if not device_hostname:
+            return jsonify({'error': 'Device hostname required'}), 400
+        
+        try:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT ip_address, status FROM devices WHERE hostname = ?', (device_hostname,))
+                device = cursor.fetchone()
+                
+                if not device:
+                    return jsonify({'error': 'Device not found'}), 404
+                
+                # Check if device is online
+                if device['status'] != 'online':
+                    return jsonify({'error': 'Device is offline'}), 400
+                
+                success = manager.open_door(device['ip_address'], device_hostname)
+                
+                if success:
+                    logger.info(f"Door opened for device {device_hostname}")
+                    return jsonify({'message': 'Door opened successfully'})
+                else:
+                    logger.warning(f"Failed to open door for device {device_hostname}")
+                    return jsonify({'error': 'Failed to open door'}), 500
+        
+        except Exception as db_error:
+            logger.error(f"Database error in open_door: {db_error}")
+            return jsonify({'error': f'Database error: {str(db_error)}'}), 500
     
-    if not device_hostname:
-        return jsonify({'error': 'Device hostname required'}), 400
-    
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute('SELECT ip_address FROM devices WHERE hostname = ?', (device_hostname,))
-        device = cursor.fetchone()
-        
-        if not device:
-            return jsonify({'error': 'Device not found'}), 404
-        
-        success = manager.open_door(device['ip_address'], device_hostname)
-        
-        if success:
-            return jsonify({'message': 'Door opened successfully'})
-        else:
-            return jsonify({'error': 'Failed to open door'}), 500
+    except Exception as e:
+        logger.error(f"Critical error in api_open_door: {e}")
+        logger.exception("Full traceback:")
+        return jsonify({'error': f'Server error: {str(e)}'}), 500
 
 @app.route('/api/devices/<hostname>/sync', methods=['POST'])
 def api_sync_device_users(hostname):
@@ -2348,7 +2431,7 @@ if __name__ == '__main__':
     sys.stdout.flush()
     
     try:
-        logger.info("ESP-RFID Manager v1.3.9 starting...")
+        logger.info("ESP-RFID Manager v1.5.0 starting...")
         print("Logger initialized successfully")
         sys.stdout.flush()
         

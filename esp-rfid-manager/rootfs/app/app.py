@@ -287,30 +287,40 @@ class ESPRFIDManager:
     """Main class for managing ESP-RFID devices"""
     
     def __init__(self):
+        logger.info("Initializing ESPRFIDManager...")
         self.mqtt_client = None
         self.connected_devices: Dict[str, Dict] = {}
         self.scheduler = BackgroundScheduler()
         self.ha_discovery_sent = set()  # Track which discoveries we've sent
         self.card_detection_active = False  # Track if we should detect new cards
+        logger.info("ESPRFIDManager attributes initialized, starting MQTT...")
         self.init_mqtt()
+        logger.info("ESPRFIDManager initialization complete")
         
     def init_mqtt(self):
         """Initialize MQTT client"""
+        logger.info("Setting up MQTT client...")
         self.mqtt_client = mqtt.Client()
         
         if MQTT_USER and MQTT_PASSWORD:
+            logger.info("Setting MQTT credentials...")
             self.mqtt_client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
             
+        logger.info("Setting MQTT callbacks...")
         self.mqtt_client.on_connect = self.on_mqtt_connect
         self.mqtt_client.on_message = self.on_mqtt_message
         self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
         
         try:
-            self.mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
+            logger.info(f"Connecting to MQTT broker {MQTT_HOST}:{MQTT_PORT}...")
+            # Use non-blocking connect to avoid hanging
+            self.mqtt_client.connect_async(MQTT_HOST, MQTT_PORT, 60)
+            logger.info("Starting MQTT loop...")
             self.mqtt_client.loop_start()
-            logger.info(f"MQTT client connected to {MQTT_HOST}:{MQTT_PORT}")
+            logger.info(f"MQTT client initiated connection to {MQTT_HOST}:{MQTT_PORT}")
         except Exception as e:
             logger.error(f"Failed to connect to MQTT broker: {e}")
+            # Don't raise exception, allow app to continue
     
     def on_mqtt_connect(self, client, userdata, flags, rc):
         """MQTT connection callback"""
@@ -1235,7 +1245,7 @@ def health_check():
     """Health check endpoint for ingress"""
     return jsonify({
         'status': 'ok',
-        'version': '1.2.2',
+        'version': '1.2.4',
         'service': 'ESP-RFID Manager',
         'manager_initialized': manager is not None
     })
@@ -2374,18 +2384,52 @@ def cleanup_offline_devices():
             logger.error(f"Failed to update HA sensors for offline device {hostname}: {e}")
 
 if __name__ == '__main__':
+    import sys
+    import time
+    
+    # Print to stdout immediately to ensure we see startup messages
+    print("Starting ESP-RFID Manager main block...")
+    sys.stdout.flush()
+    
     try:
-        logger.info("Initializing ESP-RFID Manager...")
+        logger.info("ESP-RFID Manager v1.2.4 starting...")
+        print("Logger initialized successfully")
+        sys.stdout.flush()
         
-        # Initialize database
-        init_database()
-        logger.info("Database initialized successfully")
+        logger.info(f"Python version: {sys.version}")
+        logger.info(f"Working directory: {os.getcwd()}")
+        
+        # Check if we're in addon mode
+        if SUPERVISOR_TOKEN:
+            logger.info("Running in Home Assistant addon mode")
+        else:
+            logger.info("Running in standalone mode")
+        
+        # Initialize database with retry
+        logger.info("Initializing database...")
+        for attempt in range(3):
+            try:
+                init_database()
+                logger.info("Database initialized successfully")
+                break
+            except Exception as e:
+                logger.warning(f"Database init attempt {attempt + 1} failed: {e}")
+                if attempt == 2:
+                    raise
+                time.sleep(1)
         
         # Initialize ESP-RFID manager
-        manager = ESPRFIDManager()
-        logger.info("ESP-RFID Manager instance created")
+        logger.info("Creating ESP-RFID Manager instance...")
+        try:
+            manager = ESPRFIDManager()
+            logger.info("ESP-RFID Manager instance created successfully")
+        except Exception as e:
+            logger.error(f"Failed to create ESP-RFID Manager: {e}")
+            logger.exception("Manager creation traceback:")
+            raise
         
         # Start scheduler for cleanup tasks
+        logger.info("Starting scheduler...")
         manager.scheduler.add_job(
             func=cleanup_offline_devices,
             trigger="interval",
@@ -2393,31 +2437,41 @@ if __name__ == '__main__':
             id='cleanup_offline_devices'
         )
         manager.scheduler.start()
-        logger.info("Scheduler started")
+        logger.info("Scheduler started successfully")
         
         # Set proper port for ingress mode
         port = 8080  # Always use 8080 for ingress compatibility
+        logger.info(f"Using port {port} for Flask server")
+        
         if SUPERVISOR_TOKEN:
             logger.info(f"ESP-RFID Manager starting in ingress mode on port {port}")
             logger.info(f"SUPERVISOR_TOKEN present: {len(SUPERVISOR_TOKEN) > 0}")
         else:
             logger.info(f"ESP-RFID Manager starting in standalone mode on port {port}")
         
+        # Log Flask app configuration
+        logger.info(f"Flask app name: {app.name}")
+        logger.info(f"Flask secret key set: {bool(app.config.get('SECRET_KEY'))}")
+        logger.info(f"SocketIO configured with CORS: *")
+        
         # Start Flask-SocketIO server
         logger.info("Starting Flask-SocketIO server...")
+        logger.info(f"Binding to host: 0.0.0.0, port: {port}")
+        
         socketio.run(app, 
                     host='0.0.0.0', 
                     port=port, 
                     debug=False,
-                    allow_unsafe_werkzeug=True)
+                    allow_unsafe_werkzeug=True,
+                    log_output=True)
                     
     except KeyboardInterrupt:
-        logger.info("Shutting down ESP-RFID Manager...")
-        if manager and manager.scheduler:
+        logger.info("Received shutdown signal, stopping ESP-RFID Manager...")
+        if 'manager' in locals() and manager and manager.scheduler:
             manager.scheduler.shutdown()
     except Exception as e:
-        logger.error(f"Failed to start ESP-RFID Manager: {e}")
+        logger.error(f"Critical error starting ESP-RFID Manager: {e}")
         logger.exception("Full traceback:")
-        if manager and manager.scheduler:
+        if 'manager' in locals() and manager and manager.scheduler:
             manager.scheduler.shutdown()
-        raise 
+        sys.exit(1) 

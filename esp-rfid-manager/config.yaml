@@ -1,6 +1,6 @@
 name: ESP-RFID Manager
 description: Home Assistant addon for managing ESP-RFID devices and users
-version: "1.2.2"
+version: "1.2.4"
 slug: esp-rfid-manager
 init: false
 arch:

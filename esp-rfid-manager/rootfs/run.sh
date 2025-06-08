@@ -22,6 +22,40 @@ bashio::log.info "Authentication: $(if [ -n "${SUPERVISOR_TOKEN}" ]; then echo "
 bashio::log.info "Supervisor Token: $(if [ -n "${SUPERVISOR_TOKEN}" ]; then echo "Present (${#SUPERVISOR_TOKEN} chars)"; else echo "Not set"; fi)"
 bashio::log.info "Running in ingress mode with authentication"
 
+# Debug information
+bashio::log.info "Current directory: $(pwd)"
+bashio::log.info "Python version: $(python3 --version)"
+bashio::log.info "Available files in /app:"
+ls -la /app
+
+# Set up environment for Flask
+export FLASK_ENV=production
+export PYTHONPATH=/app:$PYTHONPATH
+export PYTHONUNBUFFERED=1
+
+bashio::log.info "Environment variables set for Flask"
+
+# Test if app.py exists and is readable
+if [ -f "/app/app.py" ]; then
+    bashio::log.info "app.py found and readable"
+    
+    # Test Python syntax
+    bashio::log.info "Testing Python syntax..."
+    python3 -m py_compile /app/app.py
+    if [ $? -eq 0 ]; then
+        bashio::log.info "Python syntax check passed"
+    else
+        bashio::log.error "Python syntax check failed!"
+        exit 1
+    fi
+else
+    bashio::log.error "app.py not found or not readable!"
+    exit 1
+fi
+
 # Start the application
 cd /app
-exec python3 app.py 
+bashio::log.info "Changing to /app directory and starting Python application..."
+
+# Run with verbose output for debugging
+python3 -u app.py 2>&1 

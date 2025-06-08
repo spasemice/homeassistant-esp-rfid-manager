@@ -2348,7 +2348,7 @@ if __name__ == '__main__':
     sys.stdout.flush()
     
     try:
-        logger.info("ESP-RFID Manager v1.3.7 starting...")
+        logger.info("ESP-RFID Manager v1.3.8 starting...")
         print("Logger initialized successfully")
         sys.stdout.flush()
         
@@ -2463,15 +2463,14 @@ if __name__ == '__main__':
         
         try:
             logger.info(f"Starting SocketIO with host={bind_host}, port={port}")
-            # Add keepalive and ingress-friendly settings
+            # Add ingress-friendly settings (threaded is default in SocketIO)
             socketio.run(app, 
                         host=bind_host, 
                         port=port, 
                         debug=False,
                         allow_unsafe_werkzeug=True,
                         log_output=True,
-                        use_reloader=False,
-                        threaded=True)
+                        use_reloader=False)
             logger.info("Flask server exited normally")
         except OSError as os_error:
             if "Address already in use" in str(os_error):

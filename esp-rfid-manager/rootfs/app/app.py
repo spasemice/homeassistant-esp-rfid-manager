@@ -1245,7 +1245,7 @@ def health_check():
     """Health check endpoint for ingress"""
     return jsonify({
         'status': 'ok',
-        'version': '1.2.4',
+        'version': '1.2.5',
         'service': 'ESP-RFID Manager',
         'manager_initialized': manager is not None
     })
@@ -2392,7 +2392,7 @@ if __name__ == '__main__':
     sys.stdout.flush()
     
     try:
-        logger.info("ESP-RFID Manager v1.2.4 starting...")
+        logger.info("ESP-RFID Manager v1.2.5 starting...")
         print("Logger initialized successfully")
         sys.stdout.flush()
         

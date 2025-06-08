@@ -2478,7 +2478,7 @@ if __name__ == '__main__':
     sys.stdout.flush()
     
     try:
-        logger.info("ESP-RFID Manager v1.5.2 starting...")
+        logger.info("ESP-RFID Manager v1.5.3 starting...")
         print("Logger initialized successfully")
         sys.stdout.flush()
         

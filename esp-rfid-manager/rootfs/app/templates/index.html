@@ -610,12 +610,40 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
     <script>
-        // Initialize Socket.IO for Home Assistant ingress compatibility
+        // Detect if we're running in Home Assistant ingress iframe
+        const isInIngress = window.location.pathname.includes('/api/hassio_ingress/') || 
+                           window.parent !== window;
+        
+        // Get the correct base URL for API calls
+        let apiBaseUrl = '';
+        let socketioPath = '/socket.io/';
+        
+        if (isInIngress) {
+            // Extract the ingress path from current URL
+            const pathname = window.location.pathname;
+            if (pathname.includes('/api/hassio_ingress/')) {
+                // Format: /api/hassio_ingress/TOKEN/
+                apiBaseUrl = pathname.split('/api/hassio_ingress/')[1];
+                if (apiBaseUrl) {
+                    apiBaseUrl = '/api/hassio_ingress/' + apiBaseUrl.split('/')[0];
+                    socketioPath = apiBaseUrl + '/socket.io/';
+                }
+            }
+        }
+        
+        console.log('Ingress detection:', { isInIngress, apiBaseUrl, socketioPath });
+        
+        // Initialize Socket.IO with correct path
         const socket = io(window.location.origin, {
-            path: window.location.pathname === '/' ? '/socket.io/' : window.location.pathname + 'socket.io/',
+            path: socketioPath,
             transports: ['polling', 'websocket']
         });
         let currentRegistrationId = null;
+        
+        // Helper function to get correct API URL
+        function getApiUrl(endpoint) {
+            return apiBaseUrl + endpoint;
+        }
 
         // Utility function for showing alerts
         function showAlert(message, type = 'info') {
@@ -783,7 +811,7 @@
         function confirmDeleteDevice() {
             if (!currentDeleteDeviceHostname) return;
             
-            fetch(`/api/devices/${currentDeleteDeviceHostname}`, {
+            fetch(getApiUrl(`/api/devices/${currentDeleteDeviceHostname}`), {
                 method: 'DELETE'
             })
             .then(response => response.json())
@@ -806,7 +834,7 @@
         // HA Card Generator
         function showHACardGenerator() {
             // Load devices for selection
-            fetch('/api/devices')
+            fetch(getApiUrl('/api/devices'))
                 .then(response => response.json())
                 .then(devices => {
                     let devicesHtml = '';
@@ -848,7 +876,7 @@
             // Get selected card type
             const cardType = document.querySelector('input[name="cardType"]:checked').value;
             
-            fetch('/api/homeassistant/card-template', {
+            fetch(getApiUrl('/api/homeassistant/card-template'), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -889,7 +917,7 @@
         let currentUserPermissions = null;
 
         function editUserPermissions(userId) {
-            fetch(`/api/users/${userId}/permissions`)
+            fetch(getApiUrl(`/api/users/${userId}/permissions`))
                 .then(response => response.json())
                 .then(data => {
                     currentUserPermissions = data;
@@ -994,7 +1022,7 @@
                 };
             });
             
-            fetch(`/api/users/${currentUserPermissions.user.id}/permissions`, {
+            fetch(getApiUrl(`/api/users/${currentUserPermissions.user.id}/permissions`), {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1031,7 +1059,7 @@
 
         // Load devices
         function loadDevices() {
-            fetch('/api/devices')
+            fetch(getApiUrl('/api/devices'))
                 .then(response => response.json())
                 .then(devices => {
                     const container = document.getElementById('devices-container');
@@ -1145,7 +1173,7 @@
 
         // Load access logs
         function loadAccessLogs() {
-            fetch('/api/access-logs?limit=20')
+            fetch(getApiUrl('/api/access-logs?limit=20'))
                 .then(response => response.json())
                 .then(logs => {
                     const container = document.getElementById('access-logs');
@@ -1220,7 +1248,7 @@
                 valid_until: validUntil ? Math.floor(new Date(validUntil).getTime() / 1000) : 0
             };
             
-            fetch(`/api/card-registrations/${currentRegistrationId}`, {
+            fetch(getApiUrl(`/api/card-registrations/${currentRegistrationId}`), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1270,7 +1298,7 @@
 
         // Check if card is already registered
         function checkCardDuplicate(uid) {
-            fetch(`/api/users?uid=${encodeURIComponent(uid)}`)
+            fetch(getApiUrl(`/api/users?uid=${encodeURIComponent(uid)}`))
                 .then(response => response.json())
                 .then(users => {
                     if (users.length > 0) {
@@ -1344,7 +1372,7 @@
                 valid_until: validUntil ? Math.floor(new Date(validUntil).getTime() / 1000) : 0
             };
             
-            fetch('/api/users', {
+            fetch(getApiUrl('/api/users'), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1395,7 +1423,7 @@
             currentDeleteUserId = userId;
             
             // Load user info and devices
-            fetch(`/api/users/${userId}/devices`)
+            fetch(getApiUrl(`/api/users/${userId}/devices`))
                 .then(response => response.json())
                 .then(data => {
                     if (data.error) {
@@ -1450,7 +1478,7 @@
                 return;
             }
             
-            fetch(`/api/users/${currentDeleteUserId}`, {
+            fetch(getApiUrl(`/api/users/${currentDeleteUserId}`), {
                 method: 'DELETE',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1482,7 +1510,7 @@
 
         // Open door
         function openDoor(hostname) {
-            fetch('/api/doors/open', {
+            fetch(getApiUrl('/api/doors/open'), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1505,7 +1533,7 @@
 
         // Refresh users from device
         function refreshUsers(hostname) {
-            fetch(`/api/devices/${hostname}/sync`, {
+            fetch(getApiUrl(`/api/devices/${hostname}/sync`), {
                 method: 'POST'
             })
             .then(response => response.json())
@@ -1552,7 +1580,7 @@
         let currentEditUserId = null;
         function editUser(userId) {
             // Get user data
-            fetch(`/api/users`)
+            fetch(getApiUrl(`/api/users`))
                 .then(response => response.json())
                 .then(users => {
                     const user = users.find(u => u.id === userId);
@@ -1606,7 +1634,7 @@
                 valid_until: validUntil ? Math.floor(new Date(validUntil).getTime() / 1000) : 0
             };
             
-            fetch(`/api/users/${currentEditUserId}`, {
+            fetch(getApiUrl(`/api/users/${currentEditUserId}`), {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1631,7 +1659,7 @@
 
         // Load devices for bulk assign
         function loadBulkAssignDevices() {
-            fetch('/api/devices')
+            fetch(getApiUrl('/api/devices'))
                 .then(response => response.json())
                 .then(devices => {
                     const container = document.getElementById('bulkDevicesList');
@@ -1687,7 +1715,7 @@
                 valid_until: validUntil ? Math.floor(new Date(validUntil).getTime() / 1000) : 0
             };
             
-            fetch('/api/users/bulk-assign', {
+            fetch(getApiUrl('/api/users/bulk-assign'), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1816,7 +1844,7 @@
         function loadHomeAssistantUsers() {
             const userSelect = document.getElementById('userName');
             
-            fetch('/api/homeassistant/users')
+            fetch(getApiUrl('/api/homeassistant/users'))
                 .then(response => response.json())
                 .then(users => {
                     // Clear existing options except the first one

@@ -1177,10 +1177,28 @@ def health_check():
     """Health check endpoint for ingress"""
     return jsonify({
         'status': 'ok',
-        'version': '1.2.7',
+        'version': '1.3.4',
         'service': 'ESP-RFID Manager',
         'manager_initialized': manager is not None
     })
+
+@app.route('/debug')
+def debug_endpoint():
+    """Debug endpoint without auth to test basic connectivity"""
+    client_ip = request.environ.get('REMOTE_ADDR', request.remote_addr)
+    return f"""
+    <h1>ESP-RFID Manager Debug</h1>
+    <p><strong>Status:</strong> RUNNING ✅</p>
+    <p><strong>Version:</strong> 1.3.4</p>
+    <p><strong>Client IP:</strong> {client_ip}</p>
+    <p><strong>Supervisor Token:</strong> {'Present' if SUPERVISOR_TOKEN else 'Missing'}</p>
+    <p><strong>Host:</strong> {request.host}</p>
+    <p><strong>Time:</strong> {datetime.now().isoformat()}</p>
+    <p><strong>Headers:</strong></p>
+    <ul>
+    {''.join([f'<li>{k}: {v}</li>' for k, v in request.headers.items()])}
+    </ul>
+    """
 
 @app.route('/api/devices')
 def api_devices():
@@ -2330,7 +2348,7 @@ if __name__ == '__main__':
     sys.stdout.flush()
     
     try:
-        logger.info("ESP-RFID Manager v1.3.4 starting...")
+        logger.info("ESP-RFID Manager v1.3.5 starting...")
         print("Logger initialized successfully")
         sys.stdout.flush()
         

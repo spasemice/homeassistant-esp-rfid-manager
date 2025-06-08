@@ -1046,6 +1046,38 @@ def api_devices():
         
     return jsonify(devices)
 
+@app.route('/api/devices/<hostname>', methods=['DELETE'])
+def api_delete_device(hostname):
+    """Delete offline device"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Check if device exists
+        cursor.execute('SELECT * FROM devices WHERE hostname = ?', (hostname,))
+        device = cursor.fetchone()
+        if not device:
+            return jsonify({'error': 'Device not found'}), 404
+        
+        # Check if device is offline
+        if device['status'] == 'online':
+            return jsonify({'error': 'Cannot delete online device. Device must be offline.'}), 400
+        
+        # Delete associated users first
+        cursor.execute('DELETE FROM users WHERE device_hostname = ?', (hostname,))
+        users_deleted = cursor.rowcount
+        
+        # Delete device
+        cursor.execute('DELETE FROM devices WHERE hostname = ?', (hostname,))
+        
+        conn.commit()
+        
+        logger.info(f"🗑️ Deleted offline device {hostname} and {users_deleted} associated users")
+        
+        return jsonify({
+            'message': f'Device {hostname} deleted successfully',
+            'users_deleted': users_deleted
+        })
+
 @app.route('/api/users')
 def api_users():
     """Get list of users"""
@@ -1158,7 +1190,10 @@ def api_add_user():
 
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
 def api_delete_user(user_id):
-    """Delete user"""
+    """Delete user from selected devices"""
+    data = request.get_json() or {}
+    selected_devices = data.get('devices', [])  # List of device hostnames to delete from
+    
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
@@ -1167,26 +1202,87 @@ def api_delete_user(user_id):
         if not user:
             return jsonify({'error': 'User not found'}), 404
         
-        # Get device IP
-        cursor.execute('SELECT ip_address FROM devices WHERE hostname = ?', (user['device_hostname'],))
-        device = cursor.fetchone()
-        if not device:
-            return jsonify({'error': 'Device not found'}), 404
+        # If no devices specified, get all devices for this user
+        if not selected_devices:
+            cursor.execute('SELECT DISTINCT device_hostname FROM users WHERE uid = ?', (user['uid'],))
+            selected_devices = [row['device_hostname'] for row in cursor.fetchall()]
         
-        # Send MQTT command
-        success = manager.delete_user(device['ip_address'], user['uid'], user['device_hostname'])
+        results = []
         
-        if success:
-            # Remove from local database
-            cursor.execute('DELETE FROM users WHERE id = ?', (user_id,))
-            conn.commit()
-            return jsonify({'message': 'User deleted successfully'})
-        else:
-            return jsonify({'error': 'Failed to delete user'}), 500
+        for device_hostname in selected_devices:
+            # Get device IP
+            cursor.execute('SELECT ip_address, status FROM devices WHERE hostname = ?', (device_hostname,))
+            device = cursor.fetchone()
+            
+            if not device:
+                results.append({'device': device_hostname, 'status': 'error', 'message': 'Device not found'})
+                continue
+            
+            # Send MQTT command only if device is online
+            if device['status'] == 'online':
+                success = manager.delete_user(device['ip_address'], user['uid'], device_hostname)
+                
+                if success:
+                    # Remove from local database
+                    cursor.execute('DELETE FROM users WHERE uid = ? AND device_hostname = ?', (user['uid'], device_hostname))
+                    results.append({'device': device_hostname, 'status': 'success', 'message': 'User deleted successfully'})
+                else:
+                    results.append({'device': device_hostname, 'status': 'error', 'message': 'Failed to send MQTT command'})
+            else:
+                # Device is offline, just remove from database
+                cursor.execute('DELETE FROM users WHERE uid = ? AND device_hostname = ?', (user['uid'], device_hostname))
+                results.append({'device': device_hostname, 'status': 'success', 'message': 'User removed from offline device'})
+        
+        conn.commit()
+        
+        success_count = sum(1 for r in results if r['status'] == 'success')
+        
+        return jsonify({
+            'message': f'User deletion completed: {success_count}/{len(selected_devices)} devices',
+            'results': results
+        })
+
+@app.route('/api/users/<int:user_id>/devices')
+def api_get_user_devices(user_id):
+    """Get all devices where this user exists"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
+        user = cursor.fetchone()
+        
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Get all devices where this user exists
+        cursor.execute('''
+            SELECT DISTINCT u.device_hostname, d.ip_address, d.status, d.last_seen
+            FROM users u
+            LEFT JOIN devices d ON u.device_hostname = d.hostname
+            WHERE u.uid = ?
+            ORDER BY u.device_hostname
+        ''', (user['uid'],))
+        
+        user_devices = []
+        for row in cursor.fetchall():
+            user_devices.append({
+                'hostname': row['device_hostname'],
+                'ip_address': row['ip_address'],
+                'status': row['status'],
+                'last_seen': row['last_seen']
+            })
+        
+        return jsonify({
+            'user': {
+                'id': user['id'],
+                'uid': user['uid'],
+                'username': user['username']
+            },
+            'devices': user_devices
+        })
 
 @app.route('/api/access-logs')
 def api_access_logs():
-    """Get access logs"""
+    """Get access logs (newest first)"""
     device = request.args.get('device', '')
     limit = int(request.args.get('limit', 100))
     
@@ -1196,13 +1292,13 @@ def api_access_logs():
             cursor.execute('''
                 SELECT * FROM access_logs 
                 WHERE device_hostname = ? 
-                ORDER BY timestamp DESC 
+                ORDER BY id DESC, timestamp DESC 
                 LIMIT ?
             ''', (device, limit))
         else:
             cursor.execute('''
                 SELECT * FROM access_logs 
-                ORDER BY timestamp DESC 
+                ORDER BY id DESC, timestamp DESC 
                 LIMIT ?
             ''', (limit,))
         
@@ -1525,99 +1621,124 @@ mqtt:
 
 @app.route('/api/homeassistant/dashboard')
 def api_homeassistant_dashboard():
-    """Generate Home Assistant dashboard configuration"""
+    """Get available dashboard card templates"""
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT hostname, ip_address, status, last_seen FROM devices ORDER BY hostname')
         devices = cursor.fetchall()
     
-    # Generate Lovelace dashboard YAML
-    dashboard_yaml = """# ESP-RFID Manager - Dashboard Configuration
-# Add this to your Lovelace dashboard
+    # Return card templates instead of YAML
+    templates = {
+        'device_cards': [],
+        'overview_card': {
+            'type': 'markdown',
+            'content': '# 🚪 ESP-RFID Access Control\nMonitor and control all your ESP-RFID devices'
+        },
+        'access_history_card': {
+            'type': 'history-graph',
+            'title': 'Recent Access History',
+            'hours_to_show': 24,
+            'refresh_interval': 30,
+            'entities': []
+        },
+        'unknown_cards_card': {
+            'type': 'entities',
+            'title': '🔍 Unknown Cards Detected',
+            'show_header_toggle': False,
+            'entities': []
+        }
+    }
+    
+    for device in devices:
+        hostname = device['hostname']
+        status = device['status']
+        
+        # Individual device card
+        device_card = {
+            'type': 'custom:button-card',
+            'entity': f'binary_sensor.esp_rfid_{hostname}_online',
+            'name': hostname,
+            'show_state': False,
+            'show_icon': True,
+            'icon': 'mdi:door',
+            'tap_action': {'action': 'more-info'},
+            'styles': {
+                'card': ['height: 120px'],
+                'name': ['font-size: 14px', 'font-weight: bold'],
+                'icon': [f'color: {"green" if status == "online" else "red"}']
+            },
+            'custom_fields': {
+                'status': f'<span style="font-size: 12px;">{status.title()}</span>',
+                'last_access': f'<span style="font-size: 10px; color: gray;">Last: Unknown</span>'
+            },
+            'hostname': hostname,
+            'selectable': True
+        }
+        
+        templates['device_cards'].append(device_card)
+        templates['access_history_card']['entities'].append(f'sensor.esp_rfid_{hostname}_last_access')
+        templates['unknown_cards_card']['entities'].append(f'sensor.esp_rfid_{hostname}_unknown_card')
 
-type: vertical-stack
-cards:
-  # ESP-RFID Overview
-  - type: markdown
-    content: |
-      # 🚪 ESP-RFID Access Control
-      Monitor and control all your ESP-RFID devices
-      
-  # Grid of all doors
-  - type: grid
-    square: true
-    columns: 3
-    cards:
-"""
-    
-    for device in devices:
-        hostname = device['hostname']
-        dashboard_yaml += f"""
-      # {hostname} Door Card
-      - type: custom:button-card
-        entity: binary_sensor.esp_rfid_{hostname}_online
-        name: "{hostname}"
-        show_state: false
-        show_icon: true
-        icon: mdi:door
-        tap_action:
-          action: more-info
-        styles:
-          card:
-            - height: 120px
-          name:
-            - font-size: 14px
-            - font-weight: bold
-          icon:
-            - color: |
-                [[[
-                  if (entity.state === 'on') return 'green';
-                  else return 'red';
-                ]]]
-        custom_fields:
-          status: |
-            [[[
-              const status = entity.state === 'on' ? 'Online' : 'Offline';
-              return `<span style="font-size: 12px;">${{status}}</span>`;
-            ]]]
-          last_access: |
-            [[[
-              const lastAccess = states['sensor.esp_rfid_{hostname}_last_access'].state;
-              return `<span style="font-size: 10px; color: gray;">${{lastAccess || 'No access'}}</span>`;
-            ]]]
-        card_size: 1
-"""
-    
-    dashboard_yaml += """
-  
-  # Access History
-  - type: history-graph
-    title: "Recent Access History"
-    hours_to_show: 24
-    refresh_interval: 30
-    entities:
-"""
-    
-    for device in devices:
-        hostname = device['hostname']
-        dashboard_yaml += f"""      - sensor.esp_rfid_{hostname}_last_access
-"""
-    
-    dashboard_yaml += """
-  
-  # Unknown Cards Alert
-  - type: entities
-    title: "🔍 Unknown Cards Detected"
-    show_header_toggle: false
-    entities:
-"""
-    
-    for device in devices:
-        hostname = device['hostname']
-        dashboard_yaml += f"""      - sensor.esp_rfid_{hostname}_unknown_card
-"""
+    return jsonify(templates)
 
-    return Response(dashboard_yaml, mimetype='text/plain')
+@app.route('/api/homeassistant/card-template', methods=['POST'])
+def api_generate_card_template():
+    """Generate custom card template for selected devices"""
+    data = request.get_json()
+    selected_devices = data.get('devices', [])
+    card_type = data.get('type', 'grid')
+    
+    if not selected_devices:
+        return jsonify({'error': 'No devices selected'}), 400
+    
+    # Generate card configuration based on selected devices
+    if card_type == 'grid':
+        card_config = {
+            'type': 'grid',
+            'square': True,
+            'columns': min(len(selected_devices), 3),
+            'cards': []
+        }
+        
+        for hostname in selected_devices:
+            device_card = {
+                'type': 'custom:button-card',
+                'entity': f'binary_sensor.esp_rfid_{hostname}_online',
+                'name': hostname,
+                'show_state': False,
+                'show_icon': True,
+                'icon': 'mdi:door',
+                'tap_action': {'action': 'more-info'},
+                'styles': {
+                    'card': ['height: 120px'],
+                    'name': ['font-size: 14px', 'font-weight: bold']
+                }
+            }
+            card_config['cards'].append(device_card)
+    
+    elif card_type == 'entities':
+        card_config = {
+            'type': 'entities',
+            'title': 'ESP-RFID Devices',
+            'entities': []
+        }
+        
+        for hostname in selected_devices:
+            card_config['entities'].extend([
+                f'binary_sensor.esp_rfid_{hostname}_online',
+                f'sensor.esp_rfid_{hostname}_last_access',
+                f'button.esp_rfid_{hostname}_unlock'
+            ])
+    
+    elif card_type == 'history':
+        card_config = {
+            'type': 'history-graph',
+            'title': 'Access History',
+            'hours_to_show': 24,
+            'entities': [f'sensor.esp_rfid_{hostname}_last_access' for hostname in selected_devices]
+        }
+    
+    return jsonify(card_config)
 
 @app.route('/api/homeassistant/user-doors')
 def api_homeassistant_user_doors():

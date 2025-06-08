@@ -7,6 +7,54 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2025-06-07
+
+### Главни Нови Функции
+- **ДОДАДЕНО: Delete Offline Devices** - Можност за бришење offline уреди со сите нивни корисници
+- **ДОДАДЕНО: Multi-Device User Deletion** - Checklist за избор од кои уреди да се обрише корисникот
+- **ДОДАДЕНО: Integrated HA Card Generator** - Генератор за Home Assistant картички наместо YAML код
+- **ПОДОБРЕНО: Real-time Access Logs** - Најновите логови секогаш се погоре со flash ефект
+
+### Device Management
+- Можност за бришење offline devices со предупредување за online devices
+- Автоматско бришење на сите поврзани корисници кога се брише device
+- Enhanced device status проверки пред бришење
+
+### User Management Improvements
+- Multi-device user deletion со checkbox selection
+- Прикажување статус на секој device (online/offline) при бришење
+- Separate handling за online и offline devices при user deletion
+- Enhanced user-device mapping со детални информации
+
+### Home Assistant Integration
+- Интегриран card template generator наместо статички YAML
+- Можност за избор на devices за card generation
+- Различни типови картички: Grid, Entities, History
+- Copy to clipboard функционалност за генерирани картички
+- Real-time device status во card generation
+
+### Real-time Improvements 
+- Access logs сега се ordered по ID DESC, timestamp DESC (најнови погоре)
+- Flash ефект за нови access log entries
+- Автоматско ажурирање без refresh на страната
+- Подобрени visual indicators за real-time updates
+
+### API Enhancements
+- `/api/devices/<hostname>` DELETE endpoint за бришење devices
+- `/api/users/<id>/devices` GET endpoint за user device mapping
+- Enhanced `/api/users/<id>` DELETE со multi-device поддршка
+- `/api/homeassistant/card-template` POST endpoint за card generation
+- Подобрено error handling и response messages
+
+### UI/UX Improvements
+- Нови модали за delete operations со enhanced warnings
+- Device status indicators (online/offline) со color coding
+- Enhanced feedback за user operations
+- Professional checkbox interfaces за device selection
+- Подобрени alerts и notifications
+
+**ВАЖНО**: Оваа верзија додава значајни функции за управување со offline devices и multi-device операции!
+
 ## [1.0.9] - 2025-06-07
 
 ### Критични Поправки

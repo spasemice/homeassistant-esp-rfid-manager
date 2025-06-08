@@ -2348,7 +2348,7 @@ if __name__ == '__main__':
     sys.stdout.flush()
     
     try:
-        logger.info("ESP-RFID Manager v1.3.5 starting...")
+        logger.info("ESP-RFID Manager v1.3.6 starting...")
         print("Logger initialized successfully")
         sys.stdout.flush()
         
@@ -2396,7 +2396,7 @@ if __name__ == '__main__':
         logger.info("Scheduler started successfully")
         
         # Set proper port for ingress mode  
-        port = 8099 if SUPERVISOR_TOKEN else 8080  # Use 8099 for ingress, 8080 for standalone
+        port = 8080  # Use 8080 for both ingress and standalone
         logger.info(f"Using port {port} for Flask server")
         
         if SUPERVISOR_TOKEN:

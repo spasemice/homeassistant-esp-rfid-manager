@@ -170,7 +170,10 @@ class ESPRFIDManager:
             # Subscribe to ESP-RFID topics
             client.subscribe(f"{MQTT_TOPIC}/+/send")
             client.subscribe(f"{MQTT_TOPIC}/send")  # For single device setup
-            logger.info(f"Subscribed to {MQTT_TOPIC}/+/send and {MQTT_TOPIC}/send")
+            client.subscribe(f"{MQTT_TOPIC}/+/cmd")  # For command responses
+            client.subscribe(f"{MQTT_TOPIC}/cmd")    # For single device cmd responses
+            client.subscribe("homeassistant/button/+/cmd")  # For HA button commands
+            logger.info(f"Subscribed to {MQTT_TOPIC}/+/send, {MQTT_TOPIC}/send, {MQTT_TOPIC}/+/cmd, {MQTT_TOPIC}/cmd, and HA button commands")
         else:
             logger.error(f"Failed to connect to MQTT broker with code {rc}")
     
@@ -196,7 +199,7 @@ class ESPRFIDManager:
                 return
             
             payload = json.loads(msg.payload.decode())
-            logger.debug(f"Received MQTT message: {topic} -> {payload}")
+            logger.info(f"📩 MQTT Message: {topic} -> {payload}")
             
             # Extract device info from topic or payload
             device_hostname = payload.get('hostname', 'unknown')
@@ -221,8 +224,12 @@ class ESPRFIDManager:
                 self.handle_userfile_message(payload)
             elif cmd == 'log':
                 self.handle_log_message(payload)
-            elif payload.get('uid') and not msg_type:  # Card scan for registration
+            elif payload.get('uid') and not msg_type and not cmd:  # Card scan for registration (no cmd or type)
                 self.handle_card_scan(payload)
+            
+            # Also check for log messages from cmd topic 
+            if 'cmd' in topic and payload.get('cmd') == 'log':
+                self.handle_log_message(payload)
                 
             # Emit to web clients
             socketio.emit('mqtt_message', {
@@ -449,15 +456,17 @@ class ESPRFIDManager:
         
         # Handle unknown cards for registration - only if detection is active
         if username == 'Unknown' and uid and hostname and self.card_detection_active:
-            logger.info(f"Card detection active - Unknown card detected: {uid} on {hostname}")
+            logger.info(f"🔍 Card detection active - Unknown card detected: {uid} on {hostname}")
             socketio.emit('new_card_detected', {
                 'uid': uid,
                 'hostname': hostname,
                 'timestamp': datetime.now().isoformat()
             })
+        elif username == 'Unknown' and uid and hostname:
+            logger.info(f"🔍 Unknown card scanned: {uid} on {hostname} (detection not active)")
         
         # Emit card status info (registered or unknown)
-        socketio.emit('card_scan_result', {
+        card_scan_event = {
             'uid': uid,
             'username': username,
             'hostname': hostname,
@@ -465,7 +474,10 @@ class ESPRFIDManager:
             'access_type': access_type,
             'is_registered': username != 'Unknown',
             'timestamp': datetime.now().isoformat()
-        })
+        }
+        
+        logger.info(f"🎯 Card scan result: {username} ({uid}) -> {access_type} on {hostname}")
+        socketio.emit('card_scan_result', card_scan_event)
         
         # Update Home Assistant sensors
         self.update_ha_sensors(hostname, 'access', {
@@ -525,11 +537,13 @@ class ESPRFIDManager:
         topic = f"{MQTT_TOPIC}/cmd"
         
         try:
-            self.mqtt_client.publish(topic, json.dumps(command))
-            logger.info(f"Sent MQTT command to {device_ip}: {command}")
+            command_json = json.dumps(command)
+            result = self.mqtt_client.publish(topic, command_json)
+            logger.info(f"📤 MQTT Command sent to {device_ip} via topic '{topic}': {command}")
+            logger.info(f"📤 MQTT Publish result: {result.rc} (0=success)")
             return True
         except Exception as e:
-            logger.error(f"Failed to send MQTT command: {e}")
+            logger.error(f"❌ Failed to send MQTT command to {device_ip}: {e}")
             return False
     
     def add_user(self, device_ip: str, uid: str, username: str, acctype: int = 1, 
@@ -1310,17 +1324,41 @@ def api_edit_user(user_id):
 
 @app.route('/api/homeassistant/users')
 def api_homeassistant_users():
-    """Get Home Assistant users (mock implementation)"""
-    # This would normally integrate with Home Assistant API
-    # For now, return mock data based on common HA users
-    mock_users = [
-        {'id': 'admin', 'name': 'Administrator', 'username': 'admin'},
-        {'id': 'spase', 'name': 'Spase Micevski', 'username': 'spase'},
-        {'id': 'family', 'name': 'Family Member', 'username': 'family'},
-        {'id': 'guest', 'name': 'Guest User', 'username': 'guest'},
-        {'id': 'visitor', 'name': 'Visitor', 'username': 'visitor'},
+    """Get Home Assistant users (enhanced implementation)"""
+    # Try to get real HA users from database or existing ESP-RFID users
+    users = []
+    
+    # Get unique usernames from ESP-RFID database  
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT DISTINCT username FROM users ORDER BY username')
+        esp_rfid_users = cursor.fetchall()
+        
+        for user in esp_rfid_users:
+            username = user['username']
+            users.append({
+                'id': username.lower(),
+                'name': username.title(),
+                'username': username,
+                'source': 'esp_rfid'
+            })
+    
+    # Add some common HA system users if not already present
+    system_users = [
+        {'id': 'admin', 'name': 'Administrator', 'username': 'admin', 'source': 'system'},
+        {'id': 'homeassistant', 'name': 'Home Assistant', 'username': 'homeassistant', 'source': 'system'},
+        {'id': 'guest', 'name': 'Guest User', 'username': 'guest', 'source': 'system'},
     ]
-    return jsonify(mock_users)
+    
+    existing_usernames = {u['username'].lower() for u in users}
+    for sys_user in system_users:
+        if sys_user['username'].lower() not in existing_usernames:
+            users.append(sys_user)
+    
+    # Sort by name
+    users.sort(key=lambda x: x['name'])
+    
+    return jsonify(users)
 
 @app.route('/api/homeassistant/config')
 def api_homeassistant_config():
@@ -1631,14 +1669,14 @@ def handle_disconnect():
 def handle_start_card_detection():
     """Start card detection for Add User modal"""
     manager.card_detection_active = True
-    logger.info("Card detection started - Add User modal opened")
+    logger.info("🔍 Card detection STARTED - Add User modal opened")
     emit('card_detection_status', {'active': True, 'message': 'Card detection enabled - scan a card'})
 
 @socketio.on('stop_card_detection') 
 def handle_stop_card_detection():
     """Stop card detection when Add User modal closes"""
     manager.card_detection_active = False
-    logger.info("Card detection stopped - Add User modal closed")
+    logger.info("🔍 Card detection STOPPED - Add User modal closed")
     emit('card_detection_status', {'active': False, 'message': 'Card detection disabled'})
 
 # Cleanup task for offline devices

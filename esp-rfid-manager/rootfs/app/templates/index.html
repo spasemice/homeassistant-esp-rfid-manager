@@ -474,8 +474,11 @@
             if (addUserModal && addUserModal.classList.contains('show')) {
                 document.getElementById('userUID').value = uid;
                 
-                // Auto-check the device if available
-                const deviceCheckbox = document.getElementById(`userDevice_${data.hostname}`);
+                // Auto-check the device if available - try both naming conventions
+                let deviceCheckbox = document.getElementById(`userDevice_${data.hostname}`);
+                if (!deviceCheckbox) {
+                    deviceCheckbox = document.getElementById(`device_${data.hostname}`);
+                }
                 if (deviceCheckbox) {
                     deviceCheckbox.checked = true;
                 }
@@ -484,9 +487,10 @@
                 const uidField = document.getElementById('userUID');
                 if (isRegistered) {
                     uidField.classList.add('bg-warning', 'bg-opacity-25');
-                    showCardAlreadyRegisteredWarning(username, data.hostname);
+                    showAlert(`⚠️ Card ${uid} is already registered to user "${username}" on device ${data.hostname}`, 'warning');
                 } else {
                     uidField.classList.add('bg-success', 'bg-opacity-25');
+                    showAlert(`✅ New card ${uid} detected on ${data.hostname}`, 'success');
                 }
                 
                 setTimeout(() => {
@@ -734,6 +738,28 @@
         }
 
 
+
+        // Show alert notification
+        function showAlert(message, type = 'info') {
+            // Create alert element
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+            alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; max-width: 400px;';
+            alertDiv.innerHTML = `
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            
+            // Add to body
+            document.body.appendChild(alertDiv);
+            
+            // Auto remove after 5 seconds
+            setTimeout(() => {
+                if (alertDiv.parentNode) {
+                    alertDiv.remove();
+                }
+            }, 5000);
+        }
 
         // Check if card is already registered
         function checkCardDuplicate(uid) {

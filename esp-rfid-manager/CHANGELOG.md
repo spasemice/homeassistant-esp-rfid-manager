@@ -7,6 +7,37 @@
 
 ## [Unreleased]
 
+## [1.0.8] - 2025-06-07
+
+### Поправено
+- Поправена автоматска детекција на картички во Add User модалот - сега правилно ја пополнува UID формата
+- Поправени MQTT subscriptions за cmd topics - сега слуша и на /cmd topics за command responses
+- Поправено MQTT message handling за log commands од различни topic формати  
+- Поправена логика за device checkbox selection во Add User модалот
+- Поправен Home Assistant users API за да врати вистински корисници од базата
+
+### Подобрено
+- Додадено подобрено MQTT debugging со емоџи лог мессиџи (📩📤🔍🎯)
+- Подобрени card detection мессиџи и статус известувања
+- Додадена showAlert функција за подобри visual notifications
+- Подобрени MQTT command logs со публish result status
+- Enhanced card scan result logging со повеќе детали
+- Подобрени warning мессиџи кога картичката е веќе регистрирана
+
+### Додадено
+- Поддршка за слушање MQTT cmd topics поред send topics
+- Автоматски warnings кога се детектира веќе регистрирана картичка
+- Визуелни feedback alerts за card detection events
+- Enhanced debugging за troubleshooting MQTT комуникација
+- Подобрени SocketIO event мессиџи за card detection start/stop
+
+### Техничко
+- Проширени MQTT subscriptions: /send, /cmd, и HA button topics
+- Додадено enhanced logging во сите MQTT операции  
+- Поправена device naming convention за checkboxes
+- Подобрена error handling во frontend
+- Enhanced ESP-RFID users integration во HA users API
+
 ## [1.0.7] - 2025-06-07
 
 ### Подобрено

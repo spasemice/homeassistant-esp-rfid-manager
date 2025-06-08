@@ -25,4 +25,7 @@ COPY rootfs /
 # Make run script executable
 RUN chmod a+x /run.sh
 
+# Expose port 8080 for ingress
+EXPOSE 8080
+
 CMD [ "/run.sh" ] 

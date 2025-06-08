@@ -19,6 +19,8 @@ bashio::log.info "MQTT Host: ${MQTT_HOST}:${MQTT_PORT}"
 bashio::log.info "MQTT Topic: ${MQTT_TOPIC}"
 bashio::log.info "Web Port: ${WEB_PORT}"
 bashio::log.info "Authentication: $(if [ -n "${SUPERVISOR_TOKEN}" ]; then echo "Enabled (Home Assistant)"; else echo "Disabled"; fi)"
+bashio::log.info "Supervisor Token: $(if [ -n "${SUPERVISOR_TOKEN}" ]; then echo "Present (${#SUPERVISOR_TOKEN} chars)"; else echo "Not set"; fi)"
+bashio::log.info "Running in ingress mode with authentication"
 
 # Start the application
 cd /app

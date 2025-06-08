@@ -51,6 +51,9 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 # Database setup
 DB_PATH = '/data/esp_rfid.db'
 
+# Global manager variable (will be initialized in main)
+manager = None
+
 @contextmanager
 def get_db():
     """Database context manager"""
@@ -160,49 +163,84 @@ def init_database():
 
 def check_ha_auth():
     """Check if user is authenticated with Home Assistant"""
+    # Debug: log all headers for troubleshooting
+    logger.debug(f"Request headers: {dict(request.headers)}")
+    
     # Check if we have a valid HA session
     ha_user = session.get('ha_user')
     if ha_user:
         return ha_user
     
-    # Try to get user from Supervisor API using headers
-    auth_header = request.headers.get('Authorization')
-    if not auth_header and SUPERVISOR_TOKEN:
+    # Check if running in addon mode with ingress
+    if SUPERVISOR_TOKEN:
         # Running in addon mode, check ingress headers
-        remote_user = request.headers.get('Remote-User')
-        remote_name = request.headers.get('Remote-Name')
-        remote_groups = request.headers.get('Remote-Groups', '').split(',')
+        remote_user = request.headers.get('X-Ingress-User')
+        remote_name = request.headers.get('X-Ingress-Name') 
+        remote_groups = request.headers.get('X-Ingress-Groups', '').split(',')
+        
+        # Fallback to other header names
+        if not remote_user:
+            remote_user = request.headers.get('Remote-User')
+            remote_name = request.headers.get('Remote-Name')
+            remote_groups = request.headers.get('Remote-Groups', '').split(',')
+        
+        # Try other common header patterns
+        if not remote_user:
+            remote_user = request.headers.get('X-Remote-User')
+            remote_name = request.headers.get('X-Remote-Name')
+            remote_groups = request.headers.get('X-Remote-Groups', '').split(',')
+            
+        # Log what we found
+        logger.info(f"Ingress headers - User: {remote_user}, Name: {remote_name}, Groups: {remote_groups}")
         
         if remote_user:
             ha_user = {
                 'id': remote_user,
                 'name': remote_name or remote_user,
-                'is_admin': 'admin' in remote_groups or 'Administrators' in remote_groups
+                'is_admin': 'admin' in [g.lower().strip() for g in remote_groups] or 'administrators' in [g.lower().strip() for g in remote_groups]
             }
             session['ha_user'] = ha_user
+            logger.info(f"Authenticated user via ingress: {ha_user}")
             return ha_user
-    
-    # Try to validate with supervisor API
-    if SUPERVISOR_TOKEN:
+        else:
+            logger.warning("No ingress user headers found")
+        
+        # If no ingress headers, try to get from supervisor API
         try:
             headers = {
                 'Authorization': f'Bearer {SUPERVISOR_TOKEN}',
                 'Content-Type': 'application/json'
             }
-            response = requests.get('http://supervisor/core/api/auth', headers=headers, timeout=5)
+            # Check current session
+            response = requests.get('http://supervisor/auth', headers=headers, timeout=5)
+            logger.info(f"Supervisor auth response: {response.status_code}")
             if response.status_code == 200:
                 auth_data = response.json()
-                if auth_data.get('result') == 'ok':
+                logger.info(f"Supervisor auth data: {auth_data}")
+                if auth_data.get('result') == 'ok' and auth_data.get('data'):
                     ha_user = {
-                        'id': auth_data.get('data', {}).get('user_id'),
+                        'id': auth_data.get('data', {}).get('username', 'user'),
                         'name': auth_data.get('data', {}).get('name', 'User'),
                         'is_admin': auth_data.get('data', {}).get('is_admin', False)
                     }
                     session['ha_user'] = ha_user
+                    logger.info(f"Authenticated user via supervisor API: {ha_user}")
                     return ha_user
         except Exception as e:
-            logger.debug(f"Supervisor auth check failed: {e}")
+            logger.warning(f"Supervisor auth check failed: {e}")
     
+    # For development/standalone mode - allow access
+    if not SUPERVISOR_TOKEN:
+        logger.warning("Running without authentication (development mode)")
+        ha_user = {
+            'id': 'dev_user',
+            'name': 'Development User', 
+            'is_admin': True
+        }
+        session['ha_user'] = ha_user
+        return ha_user
+    
+    logger.warning("Authentication failed - no valid user found")
     return None
 
 def require_auth(f):
@@ -215,9 +253,25 @@ def require_auth(f):
             
         ha_user = check_ha_auth()
         if not ha_user:
-            # Redirect to Home Assistant login
-            ha_login_url = f"{HOMEASSISTANT_URL}/auth/login?redirect_uri={request.url}"
-            return redirect(ha_login_url)
+            # For ingress mode, show error instead of redirect
+            if SUPERVISOR_TOKEN:
+                logger.warning("Authentication failed - user not authenticated via ingress")
+                return """
+                <html>
+                <head><title>Authentication Required</title></head>
+                <body style="text-align:center; padding:50px; font-family:sans-serif;">
+                    <h1>🔐 Authentication Required</h1>
+                    <p>Please access ESP-RFID Manager through Home Assistant:</p>
+                    <p><strong>Settings → Add-ons → ESP-RFID Manager → Open Web UI</strong></p>
+                    <p>Or through the Sidebar if enabled.</p>
+                    <hr>
+                    <small>ESP-RFID Manager v1.2.0</small>
+                </body>
+                </html>
+                """, 401
+            else:
+                # Development mode - allow access
+                return f(*args, **kwargs)
         
         return f(*args, **kwargs)
     return decorated_function
@@ -1144,13 +1198,29 @@ manager = ESPRFIDManager()
 def index():
     """Main dashboard"""
     ha_user = check_ha_auth()
+    logger.info(f"Index route accessed by user: {ha_user}")
+    logger.info(f"Request headers: {dict(request.headers)}")
     return render_template('index.html', ha_user=ha_user)
 
 @app.route('/logout')
 def logout():
     """Logout and clear session"""
     session.clear()
-    return redirect(f"{HOMEASSISTANT_URL}/auth/logout")
+    if SUPERVISOR_TOKEN:
+        # In ingress mode, just show a message
+        return """
+        <html>
+        <head><title>Logged Out</title></head>
+        <body style="text-align:center; padding:50px; font-family:sans-serif;">
+            <h1>👋 Logged Out</h1>
+            <p>You have been logged out from ESP-RFID Manager.</p>
+            <p>To access again, go through Home Assistant interface.</p>
+            <a href="/" style="color:#0366d6;">← Back to ESP-RFID Manager</a>
+        </body>
+        </html>
+        """
+    else:
+        return redirect("/")
 
 @app.route('/api/auth/user')
 def api_auth_user():
@@ -1159,6 +1229,16 @@ def api_auth_user():
     if ha_user:
         return jsonify({'success': True, 'user': ha_user})
     return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+@app.route('/health')
+def health_check():
+    """Health check endpoint for ingress"""
+    return jsonify({
+        'status': 'ok',
+        'version': '1.2.2',
+        'service': 'ESP-RFID Manager',
+        'manager_initialized': manager is not None
+    })
 
 @app.route('/api/devices')
 def api_devices():
@@ -1333,7 +1413,7 @@ def api_add_user():
             device_ip = row['ip_address']
             
             # Send MQTT command to device
-            success = manager.add_user(device_ip, uid, username, acctype, valid_since, valid_until, device_hostname)
+            success = manager.add_user(device_ip, uid, username, acctype, valid_since, valid_until, device_hostname) if manager else False
             
             if success:
                 # Add to local database
@@ -1397,7 +1477,7 @@ def api_delete_user(user_id):
             
             # Send MQTT command only if device is online
             if device['status'] == 'online':
-                success = manager.delete_user(device['ip_address'], user['uid'], device_hostname)
+                success = manager.delete_user(device['ip_address'], user['uid'], device_hostname) if manager else False
                 
                 if success:
                     # Remove from local database
@@ -2217,20 +2297,25 @@ def handle_disconnect():
 @socketio.on('start_card_detection')
 def handle_start_card_detection():
     """Start card detection for Add User modal"""
-    manager.card_detection_active = True
-    logger.info("🔍 Card detection STARTED - Add User modal opened")
-    emit('card_detection_status', {'active': True, 'message': 'Card detection enabled - scan a card'})
+    global manager
+    if manager:
+        manager.card_detection_active = True
+        logger.info("🔍 Card detection STARTED - Add User modal opened")
+        emit('card_detection_status', {'active': True, 'message': 'Card detection enabled - scan a card'})
 
 @socketio.on('stop_card_detection') 
 def handle_stop_card_detection():
     """Stop card detection when Add User modal closes"""
-    manager.card_detection_active = False
-    logger.info("🔍 Card detection STOPPED - Add User modal closed")
-    emit('card_detection_status', {'active': False, 'message': 'Card detection disabled'})
+    global manager
+    if manager:
+        manager.card_detection_active = False
+        logger.info("🔍 Card detection STOPPED - Add User modal closed")
+        emit('card_detection_status', {'active': False, 'message': 'Card detection disabled'})
 
 # Cleanup task for offline devices
 def cleanup_offline_devices():
     """Mark devices as offline if not seen for 90 seconds (6x heartbeat of 15s)"""
+    global manager
     cutoff_time = datetime.now() - timedelta(seconds=90)
     
     with get_db() as conn:
@@ -2289,22 +2374,50 @@ def cleanup_offline_devices():
             logger.error(f"Failed to update HA sensors for offline device {hostname}: {e}")
 
 if __name__ == '__main__':
-    # Initialize database
-    init_database()
-    
-    # Start scheduler for cleanup tasks
-    manager.scheduler.add_job(
-        func=cleanup_offline_devices,
-        trigger="interval",
-        minutes=1,
-        id='cleanup_offline_devices'
-    )
-    manager.scheduler.start()
-    
-    # Start Flask-SocketIO server
-    logger.info(f"Starting ESP-RFID Manager on port {WEB_PORT}")
-    socketio.run(app, 
-                host='0.0.0.0', 
-                port=WEB_PORT, 
-                debug=False,
-                allow_unsafe_werkzeug=True) 
+    try:
+        logger.info("Initializing ESP-RFID Manager...")
+        
+        # Initialize database
+        init_database()
+        logger.info("Database initialized successfully")
+        
+        # Initialize ESP-RFID manager
+        manager = ESPRFIDManager()
+        logger.info("ESP-RFID Manager instance created")
+        
+        # Start scheduler for cleanup tasks
+        manager.scheduler.add_job(
+            func=cleanup_offline_devices,
+            trigger="interval",
+            minutes=1,
+            id='cleanup_offline_devices'
+        )
+        manager.scheduler.start()
+        logger.info("Scheduler started")
+        
+        # Set proper port for ingress mode
+        port = 8080  # Always use 8080 for ingress compatibility
+        if SUPERVISOR_TOKEN:
+            logger.info(f"ESP-RFID Manager starting in ingress mode on port {port}")
+            logger.info(f"SUPERVISOR_TOKEN present: {len(SUPERVISOR_TOKEN) > 0}")
+        else:
+            logger.info(f"ESP-RFID Manager starting in standalone mode on port {port}")
+        
+        # Start Flask-SocketIO server
+        logger.info("Starting Flask-SocketIO server...")
+        socketio.run(app, 
+                    host='0.0.0.0', 
+                    port=port, 
+                    debug=False,
+                    allow_unsafe_werkzeug=True)
+                    
+    except KeyboardInterrupt:
+        logger.info("Shutting down ESP-RFID Manager...")
+        if manager and manager.scheduler:
+            manager.scheduler.shutdown()
+    except Exception as e:
+        logger.error(f"Failed to start ESP-RFID Manager: {e}")
+        logger.exception("Full traceback:")
+        if manager and manager.scheduler:
+            manager.scheduler.shutdown()
+        raise 

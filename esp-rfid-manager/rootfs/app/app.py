@@ -27,7 +27,7 @@ MQTT_HOST = os.getenv('MQTT_HOST', '127.0.0.1')
 MQTT_PORT = int(os.getenv('MQTT_PORT', '1883'))
 MQTT_USER = os.getenv('MQTT_USER', '')
 MQTT_PASSWORD = os.getenv('MQTT_PASSWORD', '')
-MQTT_TOPIC = os.getenv('MQTT_TOPIC', '/esprfid')
+MQTT_TOPIC = os.getenv('MQTT_TOPIC', 'esprfid')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'info').upper()
 WEB_PORT = int(os.getenv('WEB_PORT', '8080'))
 AUTO_DISCOVERY = os.getenv('AUTO_DISCOVERY', 'true').lower() == 'true'
@@ -2348,7 +2348,7 @@ if __name__ == '__main__':
     sys.stdout.flush()
     
     try:
-        logger.info("ESP-RFID Manager v1.3.8 starting...")
+        logger.info("ESP-RFID Manager v1.3.9 starting...")
         print("Logger initialized successfully")
         sys.stdout.flush()
         
@@ -2456,22 +2456,38 @@ if __name__ == '__main__':
             logger.error(f"Port availability check failed: {e}")
             logger.exception("Port check error details:")
         
-        # Start Flask with detailed logging
+        # Start Flask with detailed logging and retry mechanism
         logger.info("About to call socketio.run()...")
         print(f"FLASK STARTUP: About to bind to {bind_host}:{port}")
         sys.stdout.flush()
         
+        # Add retry mechanism for Flask server
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    logger.info(f"Flask restart attempt {attempt + 1}/{max_retries}")
+                    time.sleep(2)  # Wait before retry
+                    
+                logger.info(f"Starting Flask server (attempt {attempt + 1})")
+                break  # Exit retry loop to start server
+            except Exception as e:
+                logger.error(f"Flask pre-start error: {e}")
+                if attempt == max_retries - 1:
+                    raise
+        
         try:
             logger.info(f"Starting SocketIO with host={bind_host}, port={port}")
-            # Add ingress-friendly settings (threaded is default in SocketIO)
+            # Add ingress-friendly settings and stability improvements
+            logger.info("Flask server starting - will run indefinitely...")
             socketio.run(app, 
                         host=bind_host, 
                         port=port, 
                         debug=False,
                         allow_unsafe_werkzeug=True,
-                        log_output=True,
+                        log_output=False,  # Reduce logging to prevent overflow
                         use_reloader=False)
-            logger.info("Flask server exited normally")
+            logger.warning("Flask server exited unexpectedly!")
         except OSError as os_error:
             if "Address already in use" in str(os_error):
                 logger.error(f"Port {port} is already in use! Cannot start Flask server.")

@@ -2468,19 +2468,83 @@ def cleanup_offline_devices():
             logger.info(f"{hostname} Door Status changed to offline")
         except Exception as e:
             logger.error(f"Failed to update HA sensors for offline device {hostname}: {e}")
+    
+    # Clean up old entries from connected_devices dict to prevent memory leak
+    if manager and hasattr(manager, 'connected_devices'):
+        old_cutoff = datetime.now() - timedelta(hours=1)
+        devices_to_remove = []
+        
+        for hostname, device_data in manager.connected_devices.items():
+            last_seen = device_data.get('last_seen')
+            if isinstance(last_seen, datetime) and last_seen < old_cutoff:
+                devices_to_remove.append(hostname)
+        
+        for hostname in devices_to_remove:
+            del manager.connected_devices[hostname]
+            logger.debug(f"Cleaned up old device entry: {hostname}")
+        
+        if devices_to_remove:
+            logger.info(f"Cleaned up {len(devices_to_remove)} old device entries from memory")
 
 if __name__ == '__main__':
     import sys
     import time
+    import psutil
+    import signal
+    import atexit
     
     # Print to stdout immediately to ensure we see startup messages
     print("Starting ESP-RFID Manager main block...")
     sys.stdout.flush()
     
+    # Memory monitoring function
+    def log_memory_usage():
+        try:
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            logger.info(f"Memory usage: RSS={memory_info.rss/1024/1024:.1f}MB, VMS={memory_info.vms/1024/1024:.1f}MB")
+        except Exception as e:
+            logger.warning(f"Could not get memory info: {e}")
+    
+    # Graceful shutdown handler
+    def signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+        if 'manager' in globals() and manager:
+            try:
+                if manager.scheduler:
+                    manager.scheduler.shutdown(wait=False)
+                if manager.mqtt_client:
+                    manager.mqtt_client.disconnect()
+                logger.info("Manager resources cleaned up")
+            except Exception as e:
+                logger.error(f"Error during cleanup: {e}")
+        sys.exit(0)
+    
+    # Register signal handlers
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    # Cleanup function for atexit
+    def cleanup_on_exit():
+        logger.info("ESP-RFID Manager exiting...")
+        if 'manager' in globals() and manager:
+            try:
+                if manager.scheduler:
+                    manager.scheduler.shutdown(wait=False)
+                if manager.mqtt_client:
+                    manager.mqtt_client.disconnect()
+            except:
+                pass
+    
+    atexit.register(cleanup_on_exit)
+    
     try:
-        logger.info("ESP-RFID Manager v1.5.3 starting...")
+        logger.info("ESP-RFID Manager v1.5.5 starting...")
         print("Logger initialized successfully")
         sys.stdout.flush()
+        
+        # Log initial memory usage
+        log_memory_usage()
         
         logger.info(f"Python version: {sys.version}")
         logger.info(f"Working directory: {os.getcwd()}")
@@ -2522,8 +2586,56 @@ if __name__ == '__main__':
             minutes=1,
             id='cleanup_offline_devices'
         )
+        # Add memory monitoring job
+        manager.scheduler.add_job(
+            func=log_memory_usage,
+            trigger="interval",
+            minutes=5,
+            id='memory_monitor'
+        )
+        # Add database cleanup job (daily)
+        def cleanup_old_logs():
+            try:
+                # Keep only last 1000 access logs and 500 events
+                with get_db() as conn:
+                    cursor = conn.cursor()
+                    # Keep only recent access logs
+                    cursor.execute('''
+                        DELETE FROM access_logs 
+                        WHERE id NOT IN (
+                            SELECT id FROM access_logs 
+                            ORDER BY timestamp DESC 
+                            LIMIT 1000
+                        )
+                    ''')
+                    access_deleted = cursor.rowcount
+                    
+                    # Keep only recent events  
+                    cursor.execute('''
+                        DELETE FROM events 
+                        WHERE id NOT IN (
+                            SELECT id FROM events 
+                            ORDER BY timestamp DESC 
+                            LIMIT 500
+                        )
+                    ''')
+                    events_deleted = cursor.rowcount
+                    
+                    conn.commit()
+                    
+                    if access_deleted > 0 or events_deleted > 0:
+                        logger.info(f"Database cleanup: removed {access_deleted} old access logs and {events_deleted} old events")
+            except Exception as e:
+                logger.error(f"Database cleanup error: {e}")
+        
+        manager.scheduler.add_job(
+            func=cleanup_old_logs,
+            trigger="interval",
+            hours=24,
+            id='database_cleanup'
+        )
         manager.scheduler.start()
-        logger.info("Scheduler started successfully")
+        logger.info("Scheduler started successfully with cleanup and memory monitoring")
         
         # Set proper port for ingress mode  
         port = 8080  # Use 8080 for both ingress and standalone
@@ -2606,10 +2718,26 @@ if __name__ == '__main__':
                 if attempt == max_retries - 1:
                     raise
         
+        # Add Flask error handlers
+        @app.errorhandler(Exception)
+        def handle_exception(e):
+            logger.error(f"Unhandled Flask exception: {e}")
+            logger.exception("Flask exception traceback:")
+            return "Internal server error", 500
+        
+        @app.errorhandler(500)
+        def handle_500(e):
+            logger.error(f"HTTP 500 error: {e}")
+            return "Internal server error", 500
+        
         try:
             logger.info(f"Starting SocketIO with host={bind_host}, port={port}")
             # Add ingress-friendly settings and stability improvements
             logger.info("Flask server starting - will run indefinitely...")
+            
+            # Log memory before starting Flask
+            log_memory_usage()
+            
             socketio.run(app, 
                         host=bind_host, 
                         port=port, 

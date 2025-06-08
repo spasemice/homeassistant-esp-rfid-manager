@@ -1134,7 +1134,7 @@
             const deviceFilter = document.getElementById('device-filter').value;
             const url = deviceFilter ? `/api/users?device=${deviceFilter}` : '/api/users';
             
-            fetch(url)
+            fetch(getApiUrl(url))
                 .then(response => response.json())
                 .then(users => {
                     const tbody = document.getElementById('users-table');

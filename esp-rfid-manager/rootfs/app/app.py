@@ -198,7 +198,13 @@ def require_auth(f):
     """Decorator to require Home Assistant authentication"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Always allow access in ingress mode
+        # In ingress mode, only allow connections from Home Assistant ingress gateway
+        if SUPERVISOR_TOKEN:
+            client_ip = request.environ.get('REMOTE_ADDR', request.remote_addr)
+            if client_ip != '172.30.32.2':
+                logger.warning(f"Blocked request from unauthorized IP: {client_ip}")
+                return "Access denied - invalid source", 403
+        
         ha_user = check_ha_auth()
         return f(*args, **kwargs)
     return decorated_function
@@ -2223,6 +2229,13 @@ def api_update_user_permissions(user_id):
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection"""
+    # In ingress mode, only allow connections from Home Assistant ingress gateway
+    if SUPERVISOR_TOKEN:
+        client_ip = request.environ.get('REMOTE_ADDR', request.remote_addr)
+        if client_ip != '172.30.32.2':
+            logger.warning(f"Blocked SocketIO connection from unauthorized IP: {client_ip}")
+            return False  # Reject connection
+    
     logger.info('Web client connected')
     emit('connected', {'data': 'Connected to ESP-RFID Manager'})
 
@@ -2319,7 +2332,7 @@ if __name__ == '__main__':
     sys.stdout.flush()
     
     try:
-        logger.info("ESP-RFID Manager v1.2.8 starting...")
+        logger.info("ESP-RFID Manager v1.3.0 starting...")
         print("Logger initialized successfully")
         sys.stdout.flush()
         
@@ -2366,8 +2379,8 @@ if __name__ == '__main__':
         manager.scheduler.start()
         logger.info("Scheduler started successfully")
         
-        # Set proper port for ingress mode
-        port = 8080  # Always use 8080 for ingress compatibility
+        # Set proper port for ingress mode  
+        port = 8099 if SUPERVISOR_TOKEN else 8080  # Use 8099 for ingress, 8080 for standalone
         logger.info(f"Using port {port} for Flask server")
         
         if SUPERVISOR_TOKEN:
@@ -2383,7 +2396,10 @@ if __name__ == '__main__':
         
         # Start Flask-SocketIO server
         logger.info("Starting Flask-SocketIO server...")
-        logger.info(f"Binding to host: 0.0.0.0, port: {port}")
+        
+        # For Home Assistant ingress, bind to localhost only
+        bind_host = '127.0.0.1' if SUPERVISOR_TOKEN else '0.0.0.0'
+        logger.info(f"Binding to host: {bind_host}, port: {port}")
         
         # Pre-startup checks
         import socket
@@ -2391,7 +2407,7 @@ if __name__ == '__main__':
             # Check if port is available
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(1)
-            result = sock.connect_ex(('127.0.0.1', port))
+            result = sock.connect_ex((bind_host, port))
             sock.close()
             if result == 0:
                 logger.warning(f"Port {port} appears to already be in use!")
@@ -2402,12 +2418,12 @@ if __name__ == '__main__':
         
         # Start Flask with detailed logging
         logger.info("About to call socketio.run()...")
-        print(f"FLASK STARTUP: About to bind to 0.0.0.0:{port}")
+        print(f"FLASK STARTUP: About to bind to {bind_host}:{port}")
         sys.stdout.flush()
         
         try:
             socketio.run(app, 
-                        host='0.0.0.0', 
+                        host=bind_host, 
                         port=port, 
                         debug=False,
                         allow_unsafe_werkzeug=True,

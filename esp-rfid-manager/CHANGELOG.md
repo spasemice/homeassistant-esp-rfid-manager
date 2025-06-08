@@ -7,6 +7,26 @@
 
 ## [Unreleased]
 
+## [1.1.3] - 2025-06-07
+
+### Поправено
+- **Device Deletion Error**: Поправена 500 грешка при бришење offline devices поради user_permissions табела
+- **Access Type Auto-Update**: Permissions сега автоматски ја менуваат access type (Always/Disabled) во users табела 
+- **Card Detection**: Поправена автоматска card detection во Add User modal со правилни device checkbox ID-а
+- **Bulk Assignment**: Додадено auto-check на device кога се детектира картичка во Bulk Assignment modal
+- **ESP-RFID Sync**: User permissions промени се синхронизираат со ESP-RFID уреди преку MQTT команди
+
+### Подобрено
+- Enhanced error handling во device deletion со try-catch логика
+- Автоматска детекција на device checkbox naming conventions (userDevice_ и device_)
+- Real-time синхронизација на access types помеѓу permission grid и ESP-RFID уреди
+- Подобрено логирање за debugging на permission updates
+
+### Техничко
+- Додадена error tolerant логика за user_permissions табела
+- Автоматско MQTT команди за ажурирање access types на уреди
+- Enhanced logging за permission updates и device sync operations
+
 ## [1.1.2] - 2025-06-07
 
 ### Додадено

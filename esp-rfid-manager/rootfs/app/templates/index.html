@@ -479,11 +479,9 @@
                     <div class="table-responsive">
                         <table class="table table-bordered table-sm">
                             <thead class="table-light">
-                                <tr>
+                                <tr id="permissionsTableHeader">
                                     <th style="min-width: 120px;">Device / Door</th>
-                                    <th class="text-center" id="permissionsTableHeader">
-                                        <!-- Door column headers will be loaded here -->
-                                    </th>
+                                    <!-- Door column headers will be loaded here -->
                                 </tr>
                             </thead>
                             <tbody id="permissionsTableBody">
@@ -640,8 +638,11 @@
                 // Auto-fill the UID field
                 document.getElementById('userUID').value = uid;
                 
-                // Auto-check the device if available
-                const deviceCheckbox = document.getElementById(`device_${hostname}`);
+                // Auto-check the device if available - try both naming conventions
+                let deviceCheckbox = document.getElementById(`userDevice_${hostname}`);
+                if (!deviceCheckbox) {
+                    deviceCheckbox = document.getElementById(`device_${hostname}`);
+                }
                 if (deviceCheckbox) {
                     deviceCheckbox.checked = true;
                 }
@@ -661,6 +662,12 @@
             const bulkModal = document.getElementById('bulkAssignModal');
             if (bulkModal && bulkModal.classList.contains('show')) {
                 document.getElementById('bulkUserUID').value = uid;
+                
+                // Auto-check the device if available
+                let deviceCheckbox = document.getElementById(`device_${hostname}`);
+                if (deviceCheckbox) {
+                    deviceCheckbox.checked = true;
+                }
                 
                 // Show success feedback
                 const uidField = document.getElementById('bulkUserUID');
@@ -891,8 +898,8 @@
         function buildPermissionsGrid(data) {
             const doors = ['main', 'front', 'back', 'side'];
             
-            // Build header
-            let headerHtml = '';
+            // Build header - append to existing first column
+            let headerHtml = '<th style="min-width: 120px;">Device / Door</th>';
             doors.forEach(door => {
                 headerHtml += `<th class="text-center text-capitalize">${door} Door</th>`;
             });
@@ -1034,9 +1041,9 @@
                                     <small class="text-muted d-block mb-2">Last: ${new Date(device.last_seen).toLocaleString()}</small>
                                     <div class="d-flex gap-1">
                                         ${device.status === 'offline' ? 
-                                            `<button class="btn btn-danger btn-sm flex-fill" onclick="deleteDevice('${device.hostname}')" title="Delete Offline Device">
-                                                <i class="bi bi-trash"></i> Delete
-                                            </button>` : 
+                                                                                        `<button class="btn btn-danger btn-sm flex-fill" onclick="deleteDevice('${device.hostname}', '${device.status}')" title="Delete Offline Device">
+                                                 <i class="bi bi-trash"></i> Delete
+                                             </button>` : 
                                             `<button class="btn btn-primary btn-sm" onclick="openDoor('${device.hostname}')" title="Open Door">
                                                 <i class="bi bi-door-open"></i>
                                             </button>

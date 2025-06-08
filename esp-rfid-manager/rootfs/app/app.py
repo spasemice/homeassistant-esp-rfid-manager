@@ -1067,53 +1067,62 @@ def api_devices():
 @app.route('/api/devices/<hostname>', methods=['DELETE'])
 def api_delete_device(hostname):
     """Delete offline device - Fixed version"""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        # Check if device exists
-        cursor.execute('SELECT * FROM devices WHERE hostname = ?', (hostname,))
-        device = cursor.fetchone()
-        if not device:
-            return jsonify({'error': 'Device not found'}), 404
-        
-        # Allow deletion of offline devices OR devices that haven't been seen recently
-        device_status = device.get('status', 'offline')
-        last_seen = device.get('last_seen')
-        
-        # Check if device is truly offline (either marked offline or last seen > 2 minutes ago)
-        is_offline = device_status == 'offline'
-        if last_seen and not is_offline:
-            from datetime import datetime, timedelta
-            try:
-                last_seen_dt = datetime.fromisoformat(last_seen.replace('Z', '+00:00'))
-                if datetime.now() - last_seen_dt > timedelta(minutes=2):
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Check if device exists
+            cursor.execute('SELECT * FROM devices WHERE hostname = ?', (hostname,))
+            device = cursor.fetchone()
+            if not device:
+                return jsonify({'error': 'Device not found'}), 404
+            
+            # Allow deletion of offline devices OR devices that haven't been seen recently
+            device_status = device.get('status', 'offline')
+            last_seen = device.get('last_seen')
+            
+            # Check if device is truly offline (either marked offline or last seen > 2 minutes ago)
+            is_offline = device_status == 'offline'
+            if last_seen and not is_offline:
+                from datetime import datetime, timedelta
+                try:
+                    last_seen_dt = datetime.fromisoformat(last_seen.replace('Z', '+00:00'))
+                    if datetime.now() - last_seen_dt > timedelta(minutes=2):
+                        is_offline = True
+                except:
                     is_offline = True
-            except:
-                is_offline = True
-        
-        if not is_offline:
-            return jsonify({'error': 'Cannot delete online device. Device must be offline for at least 2 minutes.'}), 400
-        
-        # Delete associated permissions first
-        cursor.execute('DELETE FROM user_permissions WHERE device_hostname = ?', (hostname,))
-        permissions_deleted = cursor.rowcount
-        
-        # Delete associated users
-        cursor.execute('DELETE FROM users WHERE device_hostname = ?', (hostname,))
-        users_deleted = cursor.rowcount
-        
-        # Delete device
-        cursor.execute('DELETE FROM devices WHERE hostname = ?', (hostname,))
-        
-        conn.commit()
-        
-        logger.info(f"🗑️ Deleted offline device {hostname}, {users_deleted} users, and {permissions_deleted} permissions")
-        
-        return jsonify({
-            'message': f'Device {hostname} deleted successfully',
-            'users_deleted': users_deleted,
-            'permissions_deleted': permissions_deleted
-        })
+            
+            if not is_offline:
+                return jsonify({'error': 'Cannot delete online device. Device must be offline for at least 2 minutes.'}), 400
+            
+            # Delete associated permissions first (if table exists)
+            permissions_deleted = 0
+            try:
+                cursor.execute('DELETE FROM user_permissions WHERE device_hostname = ?', (hostname,))
+                permissions_deleted = cursor.rowcount
+            except Exception as e:
+                logger.warning(f"Could not delete permissions (table may not exist): {e}")
+            
+            # Delete associated users
+            cursor.execute('DELETE FROM users WHERE device_hostname = ?', (hostname,))
+            users_deleted = cursor.rowcount
+            
+            # Delete device
+            cursor.execute('DELETE FROM devices WHERE hostname = ?', (hostname,))
+            
+            conn.commit()
+            
+            logger.info(f"🗑️ Deleted offline device {hostname}, {users_deleted} users, and {permissions_deleted} permissions")
+            
+            return jsonify({
+                'message': f'Device {hostname} deleted successfully',
+                'users_deleted': users_deleted,
+                'permissions_deleted': permissions_deleted
+            })
+    
+    except Exception as e:
+        logger.error(f"Error deleting device {hostname}: {str(e)}")
+        return jsonify({'error': f'Failed to delete device: {str(e)}'}), 500
 
 @app.route('/api/users')
 def api_users():
@@ -1991,6 +2000,18 @@ def api_update_user_permissions(user_id):
             return jsonify({'error': 'User not found'}), 404
         
         updated_count = 0
+        # Determine if user has any access permissions across all devices
+        has_any_access = False
+        for key, perm_data in permissions.items():
+            if ':' not in key:
+                continue
+            if perm_data.get('can_access', True):
+                has_any_access = True
+                break
+        
+        # Update access type based on permissions (Always=1 if has access, Disabled=0 if no access)
+        new_acctype = 1 if has_any_access else 0
+        
         for key, perm_data in permissions.items():
             if ':' not in key:
                 continue
@@ -2009,6 +2030,37 @@ def api_update_user_permissions(user_id):
                 perm_data.get('valid_until', 0)
             ))
             updated_count += 1
+        
+        # Update user access type in users table
+        cursor.execute('''
+            UPDATE users SET acctype = ?, updated_at = datetime('now') 
+            WHERE id = ?
+        ''', (new_acctype, user_id))
+        
+        # Also update ESP-RFID devices via MQTT for all user instances
+        cursor.execute('''
+            SELECT DISTINCT device_hostname, uid FROM users WHERE id = ?
+        ''', (user_id,))
+        user_devices = cursor.fetchall()
+        
+        for row in user_devices:
+            device_hostname = row['device_hostname']
+            uid = row['uid']
+            
+            # Get device IP
+            cursor.execute('SELECT ip_address, status FROM devices WHERE hostname = ?', (device_hostname,))
+            device = cursor.fetchone()
+            
+            if device and device['status'] == 'online':
+                # Update user access type on ESP-RFID device
+                cursor.execute('SELECT username FROM users WHERE id = ?', (user_id,))
+                user_row = cursor.fetchone()
+                if user_row:
+                    success = manager.add_user(
+                        device['ip_address'], uid, user_row['username'], 
+                        new_acctype, 0, 0, device_hostname
+                    )
+                    logger.info(f"Updated user {uid} access type to {new_acctype} on device {device_hostname}: {'success' if success else 'failed'}")
         
         conn.commit()
         

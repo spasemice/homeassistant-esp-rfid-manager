@@ -13,12 +13,14 @@ from typing import Dict, List, Optional, Any
 import threading
 import sqlite3
 from contextlib import contextmanager
+from functools import wraps
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, Response
+from flask import Flask, render_template, request, jsonify, redirect, url_for, Response, session
 from flask_socketio import SocketIO, emit
 import paho.mqtt.client as mqtt
 from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
+import requests
 
 # Configuration from environment variables
 MQTT_HOST = os.getenv('MQTT_HOST', '127.0.0.1')
@@ -29,6 +31,10 @@ MQTT_TOPIC = os.getenv('MQTT_TOPIC', '/esprfid')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'info').upper()
 WEB_PORT = int(os.getenv('WEB_PORT', '8080'))
 AUTO_DISCOVERY = os.getenv('AUTO_DISCOVERY', 'true').lower() == 'true'
+
+# Home Assistant authentication
+SUPERVISOR_TOKEN = os.getenv('SUPERVISOR_TOKEN', '')
+HOMEASSISTANT_URL = os.getenv('HOMEASSISTANT_URL', 'http://supervisor/core')
 
 # Setup logging
 logging.basicConfig(
@@ -151,6 +157,77 @@ def init_database():
         
         conn.commit()
         logger.info("Database initialized successfully")
+
+def check_ha_auth():
+    """Check if user is authenticated with Home Assistant"""
+    # Check if we have a valid HA session
+    ha_user = session.get('ha_user')
+    if ha_user:
+        return ha_user
+    
+    # Try to get user from Supervisor API using headers
+    auth_header = request.headers.get('Authorization')
+    if not auth_header and SUPERVISOR_TOKEN:
+        # Running in addon mode, check ingress headers
+        remote_user = request.headers.get('Remote-User')
+        remote_name = request.headers.get('Remote-Name')
+        remote_groups = request.headers.get('Remote-Groups', '').split(',')
+        
+        if remote_user:
+            ha_user = {
+                'id': remote_user,
+                'name': remote_name or remote_user,
+                'is_admin': 'admin' in remote_groups or 'Administrators' in remote_groups
+            }
+            session['ha_user'] = ha_user
+            return ha_user
+    
+    # Try to validate with supervisor API
+    if SUPERVISOR_TOKEN:
+        try:
+            headers = {
+                'Authorization': f'Bearer {SUPERVISOR_TOKEN}',
+                'Content-Type': 'application/json'
+            }
+            response = requests.get('http://supervisor/core/api/auth', headers=headers, timeout=5)
+            if response.status_code == 200:
+                auth_data = response.json()
+                if auth_data.get('result') == 'ok':
+                    ha_user = {
+                        'id': auth_data.get('data', {}).get('user_id'),
+                        'name': auth_data.get('data', {}).get('name', 'User'),
+                        'is_admin': auth_data.get('data', {}).get('is_admin', False)
+                    }
+                    session['ha_user'] = ha_user
+                    return ha_user
+        except Exception as e:
+            logger.debug(f"Supervisor auth check failed: {e}")
+    
+    return None
+
+def require_auth(f):
+    """Decorator to require Home Assistant authentication"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Skip auth check for API routes (they can be used by HA)
+        if request.endpoint and request.endpoint.startswith('api_'):
+            return f(*args, **kwargs)
+            
+        ha_user = check_ha_auth()
+        if not ha_user:
+            # Redirect to Home Assistant login
+            ha_login_url = f"{HOMEASSISTANT_URL}/auth/login?redirect_uri={request.url}"
+            return redirect(ha_login_url)
+        
+        return f(*args, **kwargs)
+    return decorated_function
+
+def get_ha_api_headers():
+    """Get headers for Home Assistant API calls"""
+    headers = {'Content-Type': 'application/json'}
+    if SUPERVISOR_TOKEN:
+        headers['Authorization'] = f'Bearer {SUPERVISOR_TOKEN}'
+    return headers
 
 class ESPRFIDManager:
     """Main class for managing ESP-RFID devices"""
@@ -398,6 +475,31 @@ class ESPRFIDManager:
         
         # Log to HA history
         self.log_access_to_ha_history(hostname, username, uid, access_type, 'rfid')
+        
+        # Handle unknown cards for registration - only if detection is active
+        if username == 'Unknown' and uid and hostname and self.card_detection_active:
+            logger.info(f"🔍 Card detection active - Unknown card detected: {uid} on {hostname} (from access message)")
+            socketio.emit('new_card_detected', {
+                'uid': uid,
+                'hostname': hostname,
+                'timestamp': datetime.now().isoformat()
+            })
+        elif username == 'Unknown' and uid and hostname:
+            logger.info(f"🔍 Unknown card scanned: {uid} on {hostname} (detection not active, from access message)")
+        
+        # Emit card status info (registered or unknown)
+        card_scan_event = {
+            'uid': uid,
+            'username': username,
+            'hostname': hostname,
+            'door_name': door_name,
+            'access_type': access_type,
+            'is_registered': username != 'Unknown',
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        logger.info(f"🎯 Card scan result: {username} ({uid}) -> {access_type} on {hostname} (from access message)")
+        socketio.emit('card_scan_result', card_scan_event)
     
     def handle_event_message(self, payload: Dict):
         """Handle system event message"""
@@ -1038,9 +1140,25 @@ manager = ESPRFIDManager()
 
 # Flask routes
 @app.route('/')
+@require_auth
 def index():
     """Main dashboard"""
-    return render_template('index.html')
+    ha_user = check_ha_auth()
+    return render_template('index.html', ha_user=ha_user)
+
+@app.route('/logout')
+def logout():
+    """Logout and clear session"""
+    session.clear()
+    return redirect(f"{HOMEASSISTANT_URL}/auth/logout")
+
+@app.route('/api/auth/user')
+def api_auth_user():
+    """Get current authenticated user info"""
+    ha_user = check_ha_auth()
+    if ha_user:
+        return jsonify({'success': True, 'user': ha_user})
+    return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
 @app.route('/api/devices')
 def api_devices():
@@ -1078,18 +1196,31 @@ def api_delete_device(hostname):
                 return jsonify({'error': 'Device not found'}), 404
             
             # Allow deletion of offline devices OR devices that haven't been seen recently
-            device_status = device.get('status', 'offline')
-            last_seen = device.get('last_seen')
+            device_status = device['status'] if device['status'] else 'offline'
+            last_seen = device['last_seen']
             
             # Check if device is truly offline (either marked offline or last seen > 2 minutes ago)
             is_offline = device_status == 'offline'
             if last_seen and not is_offline:
                 from datetime import datetime, timedelta
                 try:
-                    last_seen_dt = datetime.fromisoformat(last_seen.replace('Z', '+00:00'))
+                    # Handle different datetime formats
+                    if isinstance(last_seen, str):
+                        if 'T' in last_seen:
+                            # ISO format with T
+                            last_seen_dt = datetime.fromisoformat(last_seen.replace('Z', '+00:00'))
+                        else:
+                            # SQLite datetime format
+                            last_seen_dt = datetime.strptime(last_seen, '%Y-%m-%d %H:%M:%S')
+                    else:
+                        # Assume it's already a datetime object
+                        last_seen_dt = last_seen
+                    
                     if datetime.now() - last_seen_dt > timedelta(minutes=2):
                         is_offline = True
-                except:
+                        logger.info(f"Device {hostname} marked as offline due to timeout (last seen: {last_seen})")
+                except Exception as e:
+                    logger.warning(f"Error parsing last_seen date for {hostname}: {e}")
                     is_offline = True
             
             if not is_offline:
@@ -2099,8 +2230,8 @@ def handle_stop_card_detection():
 
 # Cleanup task for offline devices
 def cleanup_offline_devices():
-    """Mark devices as offline if not seen for 45 seconds (3x heartbeat)"""
-    cutoff_time = datetime.now() - timedelta(seconds=45)
+    """Mark devices as offline if not seen for 90 seconds (6x heartbeat of 15s)"""
+    cutoff_time = datetime.now() - timedelta(seconds=90)
     
     with get_db() as conn:
         cursor = conn.cursor()

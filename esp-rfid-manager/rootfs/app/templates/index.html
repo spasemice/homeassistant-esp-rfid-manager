@@ -59,6 +59,23 @@
             <div class="d-flex align-items-center">
                 <div class="real-time-indicator me-2"></div>
                 <small class="text-light">Live Updates</small>
+                {% if ha_user %}
+                <div class="dropdown ms-3">
+                    <button class="btn btn-outline-light btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                        <i class="bi bi-person-circle"></i> {{ ha_user.name }}
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end">
+                        <li><h6 class="dropdown-header">{{ ha_user.name }}</h6></li>
+                        <li><span class="dropdown-item-text small text-muted">
+                            {% if ha_user.is_admin %}Admin User{% else %}Standard User{% endif %}
+                        </span></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="/logout">
+                            <i class="bi bi-box-arrow-right"></i> Logout
+                        </a></li>
+                    </ul>
+                </div>
+                {% endif %}
             </div>
         </div>
     </nav>

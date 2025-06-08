@@ -7,6 +7,64 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2025-06-07
+
+### Додадено
+- **Home Assistant Authentication Integration**: Addon сега бара authentication со Home Assistant
+- User session management со автоматски redirect кон HA login ако не е најавен
+- User info display во navbar со admin/standard user roles 
+- Logout функционалност со правилно session cleanup
+- Ingress поддршка за сигурен пристап преку Home Assistant интерфејс
+- Auth API интеграција за user validation
+
+### Подобрено
+- Сигурна access control - само најавени Home Assistant корисници можат да пристапат
+- Подобрено user experience со правилен authentication flow
+- Подобра интеграција со Home Assistant екосистемот
+- Професионален navbar со user dropdown мени
+
+### Променето
+- Port конфигурација подновена за користење ingress наместо директен port пристап
+- Authentication middleware додаден за заштита на сите non-API routes
+- Session-based user management
+
+### Безбедност
+- Сиот web интерфејс пристап сега бара Home Assistant authentication
+- API endpoints остануваат достапни за Home Assistant интеграција
+- Сигурна token-based authentication со Supervisor API
+
+## [1.1.5] - 2025-06-07
+
+### Поправено
+- **Offline Detection Timeout**: Зголемен timeout од 45 на 90 секунди (6x heartbeat од 15 сек) за подобра стабилност
+- **Card Detection за Access Messages**: Додадена поддршка за card detection при `"type": "access"` пораки од `/send` topic
+- **Device Deletion DateTime Parsing**: Поправено parsing на различни datetime формати за offline device проверки
+- **Card Auto-Fill**: Сега функционира card detection за unknown cards од `esprfid/device/send` topic
+
+### Подобрено
+- Card detection сега работи за сите типови пораки: `/tag`, `/send` (access), и event messages
+- Подобрено логирање за card detection events со извор на порака
+- Enhanced datetime handling во device deletion логика
+- Стабилнос на offline device detection за уреди со 15-секундни heartbeats
+
+### Техничко
+- Додадена `card_scan_result` event emission во `handle_access_message`
+- Enhanced datetime parsing за SQLite и ISO формати
+- Зголемен offline timeout на 90 секунди за подобра мрежна толеранција
+- Enhanced logging за device timeout events
+
+## [1.1.4] - 2025-06-07
+
+### Поправено
+- **Device Deletion sqlite3.Row Error**: Поправена грешка при бришење devices поради sqlite3.Row објект синтакса
+- **Permission Grid Headers**: Поправени header колони во User Permissions табела за да се прикажуваат имињата на вратите
+- **Table Structure**: Исправена HTML табела структура за permission grid
+
+### Подобрено
+- Јасни header колони во Permission Grid: "Main Door", "Front Door", "Back Door", "Side Door"  
+- Подобрена читливост на permissions табелата
+- Поправен sqlite3.Row објект handling во device operations
+
 ## [1.1.3] - 2025-06-07
 
 ### Поправено

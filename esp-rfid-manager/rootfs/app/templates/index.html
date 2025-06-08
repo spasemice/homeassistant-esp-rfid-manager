@@ -610,8 +610,11 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
     <script>
-        // Initialize Socket.IO
-        const socket = io();
+        // Initialize Socket.IO for Home Assistant ingress compatibility
+        const socket = io(window.location.origin, {
+            path: window.location.pathname === '/' ? '/socket.io/' : window.location.pathname + 'socket.io/',
+            transports: ['polling', 'websocket']
+        });
         let currentRegistrationId = null;
 
         // Utility function for showing alerts

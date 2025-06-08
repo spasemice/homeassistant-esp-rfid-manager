@@ -46,7 +46,13 @@ logger = logging.getLogger(__name__)
 # Flask app setup
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'esp-rfid-manager-secret-key'
-socketio = SocketIO(app, cors_allowed_origins="*")
+# Configure Flask-SocketIO for Home Assistant ingress
+socketio = SocketIO(app, 
+                   cors_allowed_origins="*",
+                   logger=False,  # Reduce logging
+                   engineio_logger=False,  # Reduce logging
+                   allow_upgrades=True,
+                   transports=['polling', 'websocket'])
 
 # Database setup
 DB_PATH = '/data/esp_rfid.db'
@@ -1180,10 +1186,51 @@ def health_check():
     """Health check endpoint for ingress"""
     return jsonify({
         'status': 'ok',
-        'version': '1.3.4',
+        'version': '1.5.1',
         'service': 'ESP-RFID Manager',
-        'manager_initialized': manager is not None
+        'manager_initialized': manager is not None,
+        'supervisor_token_present': bool(SUPERVISOR_TOKEN)
     })
+
+@app.route('/ingress-test')
+def ingress_test():
+    """Test endpoint to verify ingress connectivity"""
+    client_ip = request.environ.get('REMOTE_ADDR', request.remote_addr)
+    x_forwarded_for = request.headers.get('X-Forwarded-For', 'Not present')
+    x_ingress_path = request.headers.get('X-Ingress-Path', 'Not present')
+    x_remote_user = request.headers.get('X-Remote-User-Id', 'Not present')
+    
+    return f"""
+    <h1>🔍 ESP-RFID Manager Ingress Test</h1>
+    <p><strong>Status:</strong> ✅ WORKING</p>
+    <p><strong>Version:</strong> 1.5.1</p>
+    <p><strong>Client IP:</strong> {client_ip}</p>
+    <p><strong>X-Forwarded-For:</strong> {x_forwarded_for}</p>
+    <p><strong>X-Ingress-Path:</strong> {x_ingress_path}</p>
+    <p><strong>X-Remote-User-Id:</strong> {x_remote_user}</p>
+    <p><strong>Host:</strong> {request.host}</p>
+    <p><strong>URL:</strong> {request.url}</p>
+    <p><strong>Base URL:</strong> {request.base_url}</p>
+    <p><strong>Supervisor Token:</strong> {'Present' if SUPERVISOR_TOKEN else 'Missing'}</p>
+    <p><strong>Manager:</strong> {'Initialized' if manager else 'Not initialized'}</p>
+    <hr>
+    <h3>🔧 JavaScript Test</h3>
+    <button onclick="testAPI()">Test API Connection</button>
+    <div id="apiResult"></div>
+    
+    <script>
+    function testAPI() {{
+        fetch('/api/devices')
+            .then(response => response.json())
+            .then(data => {{
+                document.getElementById('apiResult').innerHTML = '<p style="color:green">✅ API working! Devices: ' + data.length + '</p>';
+            }})
+            .catch(error => {{
+                document.getElementById('apiResult').innerHTML = '<p style="color:red">❌ API error: ' + error + '</p>';
+            }});
+    }}
+    </script>
+    """
 
 @app.route('/debug')
 def debug_endpoint():
@@ -2431,7 +2478,7 @@ if __name__ == '__main__':
     sys.stdout.flush()
     
     try:
-        logger.info("ESP-RFID Manager v1.5.0 starting...")
+        logger.info("ESP-RFID Manager v1.5.2 starting...")
         print("Logger initialized successfully")
         sys.stdout.flush()
         

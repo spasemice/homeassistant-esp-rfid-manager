@@ -460,6 +460,73 @@
         </div>
     </div>
 
+    <!-- User Permissions Modal -->
+    <div class="modal fade" id="userPermissionsModal" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">User Access Permissions</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle"></i>
+                        <strong>Access Control Grid:</strong> Configure which doors this user can access on each device.
+                    </div>
+                    <div id="userPermissionsInfo" class="mb-3">
+                        <!-- User info will be loaded here -->
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-bordered table-sm">
+                            <thead class="table-light">
+                                <tr>
+                                    <th style="min-width: 120px;">Device / Door</th>
+                                    <th class="text-center" id="permissionsTableHeader">
+                                        <!-- Door column headers will be loaded here -->
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody id="permissionsTableBody">
+                                <!-- Permissions grid will be loaded here -->
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="row mt-3">
+                        <div class="col-md-6">
+                            <h6>Bulk Actions:</h6>
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-success" onclick="setAllPermissions(true)">
+                                    <i class="bi bi-check-all"></i> Allow All
+                                </button>
+                                <button class="btn btn-danger" onclick="setAllPermissions(false)">
+                                    <i class="bi bi-x-lg"></i> Deny All
+                                </button>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>Legend:</h6>
+                            <span class="badge bg-success me-2">
+                                <i class="bi bi-check"></i> Allowed
+                            </span>
+                            <span class="badge bg-danger me-2">
+                                <i class="bi bi-x"></i> Denied
+                            </span>
+                            <span class="badge bg-secondary">
+                                <i class="bi bi-wifi-off"></i> Offline
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="saveUserPermissions()">
+                        <i class="bi bi-shield-check"></i> Save Permissions
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- HA Card Template Modal -->
     <div class="modal fade" id="haCardModal" tabindex="-1">
         <div class="modal-dialog modal-lg">
@@ -500,22 +567,30 @@
                             </div>
                         </div>
                     </div>
+                    
                     <div class="mt-3">
-                        <button class="btn btn-primary" onclick="generateHACard()">
+                        <button class="btn btn-success" onclick="generateHACard()">
                             <i class="bi bi-gear"></i> Generate Card
                         </button>
-                        <button class="btn btn-outline-secondary" onclick="copyCardToClipboard()">
-                            <i class="bi bi-clipboard"></i> Copy to Clipboard
-                        </button>
                     </div>
+                    
                     <div class="mt-3">
-                        <label class="form-label">Generated YAML:</label>
-                        <textarea id="generatedCard" class="form-control" rows="10" readonly></textarea>
+                        <label for="generatedCard" class="form-label">Generated Card Configuration:</label>
+                        <textarea class="form-control" id="generatedCard" rows="12" readonly 
+                                  placeholder="Click 'Generate Card' to create Home Assistant card configuration..."></textarea>
+                        <div class="mt-2">
+                            <button class="btn btn-outline-primary btn-sm" onclick="copyCardToClipboard()">
+                                <i class="bi bi-clipboard"></i> Copy to Clipboard
+                            </button>
+                        </div>
                     </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>
-    </div>
+
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
@@ -523,6 +598,28 @@
         // Initialize Socket.IO
         const socket = io();
         let currentRegistrationId = null;
+
+        // Utility function for showing alerts
+        function showAlert(message, type = 'info') {
+            // Create alert element
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+            alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+            alertDiv.innerHTML = `
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            
+            // Add to body
+            document.body.appendChild(alertDiv);
+            
+            // Auto remove after 5 seconds
+            setTimeout(() => {
+                if (alertDiv.parentNode) {
+                    alertDiv.remove();
+                }
+            }, 5000);
+        }
 
         // Socket event handlers
         socket.on('connect', function() {
@@ -761,6 +858,137 @@
             });
         }
 
+        // User Permissions Functions
+        let currentUserPermissions = null;
+
+        function editUserPermissions(userId) {
+            fetch(`/api/users/${userId}/permissions`)
+                .then(response => response.json())
+                .then(data => {
+                    currentUserPermissions = data;
+                    
+                    // Set user info
+                    document.getElementById('userPermissionsInfo').innerHTML = `
+                        <div class="card bg-light">
+                            <div class="card-body py-2">
+                                <strong>${data.user.username}</strong> 
+                                <span class="text-muted">UID: ${data.user.uid}</span>
+                            </div>
+                        </div>
+                    `;
+                    
+                    // Build permissions grid
+                    buildPermissionsGrid(data);
+                    
+                    new bootstrap.Modal(document.getElementById('userPermissionsModal')).show();
+                })
+                .catch(error => {
+                    console.error('Error loading user permissions:', error);
+                    alert('Error loading user permissions');
+                });
+        }
+
+        function buildPermissionsGrid(data) {
+            const doors = ['main', 'front', 'back', 'side'];
+            
+            // Build header
+            let headerHtml = '';
+            doors.forEach(door => {
+                headerHtml += `<th class="text-center text-capitalize">${door} Door</th>`;
+            });
+            document.getElementById('permissionsTableHeader').innerHTML = headerHtml;
+            
+            // Build rows
+            let bodyHtml = '';
+            data.devices.forEach(device => {
+                bodyHtml += `
+                    <tr>
+                        <td>
+                            <strong>${device.hostname}</strong><br>
+                            <small class="text-muted">${device.ip_address}</small><br>
+                            <span class="badge bg-${device.status === 'online' ? 'success' : 'secondary'} badge-sm">
+                                ${device.status}
+                            </span>
+                        </td>
+                `;
+                
+                doors.forEach(door => {
+                    const key = `${device.hostname}:${door}`;
+                    const perm = data.permissions[key];
+                    const isAllowed = perm ? perm.can_access : true;
+                    const isDisabled = device.status === 'offline';
+                    
+                    bodyHtml += `
+                        <td class="text-center">
+                            <div class="form-check form-switch d-flex justify-content-center">
+                                <input class="form-check-input permission-switch" 
+                                       type="checkbox" 
+                                       data-device="${device.hostname}" 
+                                       data-door="${door}"
+                                       ${isAllowed ? 'checked' : ''} 
+                                       ${isDisabled ? 'disabled' : ''}>
+                            </div>
+                        </td>
+                    `;
+                });
+                
+                bodyHtml += '</tr>';
+            });
+            
+            document.getElementById('permissionsTableBody').innerHTML = bodyHtml;
+        }
+
+        function setAllPermissions(allow) {
+            const switches = document.querySelectorAll('.permission-switch:not([disabled])');
+            switches.forEach(sw => {
+                sw.checked = allow;
+            });
+        }
+
+        function saveUserPermissions() {
+            if (!currentUserPermissions) {
+                alert('No user permissions data loaded');
+                return;
+            }
+            
+            const permissions = {};
+            const switches = document.querySelectorAll('.permission-switch');
+            
+            switches.forEach(sw => {
+                const device = sw.dataset.device;
+                const door = sw.dataset.door;
+                const key = `${device}:${door}`;
+                
+                permissions[key] = {
+                    can_access: sw.checked,
+                    access_type: 'permanent',
+                    valid_from: 0,
+                    valid_until: 0
+                };
+            });
+            
+            fetch(`/api/users/${currentUserPermissions.user.id}/permissions`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ permissions })
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.message) {
+                    showAlert('✅ ' + result.message, 'success');
+                    bootstrap.Modal.getInstance(document.getElementById('userPermissionsModal')).hide();
+                } else {
+                    alert('Error: ' + (result.error || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Error saving permissions:', error);
+                alert('Error saving permissions');
+            });
+        }
+
         // Load initial data
         document.addEventListener('DOMContentLoaded', function() {
             loadDevices();
@@ -788,29 +1016,34 @@
                     userDevicesList.innerHTML = '';
                     
                     devices.forEach(device => {
-                        // Device card
+                        // Device card - Compact layout
                         const deviceCard = document.createElement('div');
-                        deviceCard.className = 'col-md-4 mb-3';
+                        deviceCard.className = 'col-lg-6 col-xl-4 mb-3';
                         deviceCard.innerHTML = `
-                            <div class="card device-card">
-                                <div class="card-body">
-                                    <div class="d-flex justify-content-between align-items-center">
-                                        <h6 class="card-title">${device.hostname}</h6>
-                                        <span class="badge ${device.status === 'online' ? 'bg-success' : 'bg-danger'}">
+                            <div class="card device-card h-100">
+                                <div class="card-body p-3">
+                                    <div class="d-flex justify-content-between align-items-start mb-2">
+                                        <div class="flex-grow-1 min-w-0">
+                                            <h6 class="card-title mb-1 text-truncate">${device.hostname}</h6>
+                                            <p class="card-text text-muted mb-0 small">${device.ip_address}</p>
+                                        </div>
+                                        <span class="badge ${device.status === 'online' ? 'bg-success' : 'bg-secondary'} ms-2 flex-shrink-0">
                                             ${device.status}
                                         </span>
                                     </div>
-                                    <p class="card-text small">
-                                        <strong>IP:</strong> ${device.ip_address}<br>
-                                        <strong>Last Seen:</strong> ${new Date(device.last_seen).toLocaleString()}
-                                    </p>
-                                    <div class="btn-group btn-group-sm w-100">
-                                        <button class="btn btn-outline-primary" onclick="openDoor('${device.hostname}')">
-                                            <i class="bi bi-door-open"></i> Open
-                                        </button>
-                                        <button class="btn btn-outline-info" onclick="refreshUsers('${device.hostname}')">
-                                            <i class="bi bi-arrow-clockwise"></i> Sync
-                                        </button>
+                                    <small class="text-muted d-block mb-2">Last: ${new Date(device.last_seen).toLocaleString()}</small>
+                                    <div class="d-flex gap-1">
+                                        ${device.status === 'offline' ? 
+                                            `<button class="btn btn-danger btn-sm flex-fill" onclick="deleteDevice('${device.hostname}')" title="Delete Offline Device">
+                                                <i class="bi bi-trash"></i> Delete
+                                            </button>` : 
+                                            `<button class="btn btn-primary btn-sm" onclick="openDoor('${device.hostname}')" title="Open Door">
+                                                <i class="bi bi-door-open"></i>
+                                            </button>
+                                            <button class="btn btn-outline-secondary btn-sm flex-fill" onclick="refreshUsers('${device.hostname}')" title="Sync Users">
+                                                <i class="bi bi-arrow-clockwise"></i> Sync
+                                            </button>`
+                                        }
                                     </div>
                                 </div>
                             </div>
@@ -867,6 +1100,9 @@
                                 <div class="btn-group btn-group-sm">
                                     <button class="btn btn-outline-primary" onclick="editUser(${user.id})" title="Edit User">
                                         <i class="bi bi-pencil"></i>
+                                    </button>
+                                    <button class="btn btn-outline-success" onclick="editUserPermissions(${user.id})" title="Edit Permissions">
+                                        <i class="bi bi-shield-check"></i>
                                     </button>
                                     <button class="btn btn-outline-danger" onclick="deleteUser(${user.id})" title="Delete User">
                                         <i class="bi bi-trash"></i>

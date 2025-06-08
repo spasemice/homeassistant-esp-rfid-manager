@@ -131,6 +131,24 @@ def init_database():
             )
         ''')
         
+        # Add permissions table in init_database function, after the existing table creation
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_permissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                device_hostname TEXT NOT NULL,
+                door_name TEXT NOT NULL DEFAULT 'main',
+                can_access BOOLEAN DEFAULT TRUE,
+                access_type TEXT DEFAULT 'permanent',
+                valid_from INTEGER DEFAULT 0,
+                valid_until INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+                UNIQUE(user_id, device_hostname, door_name)
+            )
+        ''')
+        
         conn.commit()
         logger.info("Database initialized successfully")
 
@@ -1048,7 +1066,7 @@ def api_devices():
 
 @app.route('/api/devices/<hostname>', methods=['DELETE'])
 def api_delete_device(hostname):
-    """Delete offline device"""
+    """Delete offline device - Fixed version"""
     with get_db() as conn:
         cursor = conn.cursor()
         
@@ -1058,11 +1076,29 @@ def api_delete_device(hostname):
         if not device:
             return jsonify({'error': 'Device not found'}), 404
         
-        # Check if device is offline
-        if device['status'] == 'online':
-            return jsonify({'error': 'Cannot delete online device. Device must be offline.'}), 400
+        # Allow deletion of offline devices OR devices that haven't been seen recently
+        device_status = device.get('status', 'offline')
+        last_seen = device.get('last_seen')
         
-        # Delete associated users first
+        # Check if device is truly offline (either marked offline or last seen > 2 minutes ago)
+        is_offline = device_status == 'offline'
+        if last_seen and not is_offline:
+            from datetime import datetime, timedelta
+            try:
+                last_seen_dt = datetime.fromisoformat(last_seen.replace('Z', '+00:00'))
+                if datetime.now() - last_seen_dt > timedelta(minutes=2):
+                    is_offline = True
+            except:
+                is_offline = True
+        
+        if not is_offline:
+            return jsonify({'error': 'Cannot delete online device. Device must be offline for at least 2 minutes.'}), 400
+        
+        # Delete associated permissions first
+        cursor.execute('DELETE FROM user_permissions WHERE device_hostname = ?', (hostname,))
+        permissions_deleted = cursor.rowcount
+        
+        # Delete associated users
         cursor.execute('DELETE FROM users WHERE device_hostname = ?', (hostname,))
         users_deleted = cursor.rowcount
         
@@ -1071,11 +1107,12 @@ def api_delete_device(hostname):
         
         conn.commit()
         
-        logger.info(f"🗑️ Deleted offline device {hostname} and {users_deleted} associated users")
+        logger.info(f"🗑️ Deleted offline device {hostname}, {users_deleted} users, and {permissions_deleted} permissions")
         
         return jsonify({
             'message': f'Device {hostname} deleted successfully',
-            'users_deleted': users_deleted
+            'users_deleted': users_deleted,
+            'permissions_deleted': permissions_deleted
         })
 
 @app.route('/api/users')
@@ -1880,6 +1917,107 @@ def api_homeassistant_access_history():
         'device_filter': device_hostname,
         'entries': history_entries
     })
+
+@app.route('/api/users/<int:user_id>/permissions')
+def api_get_user_permissions(user_id):
+    """Get user permissions for all devices/doors"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Get user info
+        cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Get all devices
+        cursor.execute('SELECT hostname, ip_address, status FROM devices ORDER BY hostname')
+        devices = cursor.fetchall()
+        
+        # Get current permissions
+        cursor.execute('''
+            SELECT device_hostname, door_name, can_access, access_type, valid_from, valid_until
+            FROM user_permissions 
+            WHERE user_id = ?
+        ''', (user_id,))
+        permissions = {f"{row['device_hostname']}:{row['door_name']}": row for row in cursor.fetchall()}
+        
+        # Build permissions grid
+        result = {
+            'user': {
+                'id': user['id'],
+                'uid': user['uid'],
+                'username': user['username']
+            },
+            'devices': [],
+            'permissions': {}
+        }
+        
+        for device in devices:
+            hostname = device['hostname']
+            doors = ['main', 'front', 'back', 'side']  # Default doors
+            
+            result['devices'].append({
+                'hostname': hostname,
+                'ip_address': device['ip_address'],
+                'status': device['status'],
+                'doors': doors
+            })
+            
+            for door in doors:
+                key = f"{hostname}:{door}"
+                perm = permissions.get(key)
+                result['permissions'][key] = {
+                    'can_access': perm['can_access'] if perm else True,
+                    'access_type': perm['access_type'] if perm else 'permanent',
+                    'valid_from': perm['valid_from'] if perm else 0,
+                    'valid_until': perm['valid_until'] if perm else 0
+                }
+    
+    return jsonify(result)
+
+@app.route('/api/users/<int:user_id>/permissions', methods=['PUT'])
+def api_update_user_permissions(user_id):
+    """Update user permissions for devices/doors"""
+    data = request.get_json()
+    permissions = data.get('permissions', {})
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Verify user exists
+        cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
+        if not cursor.fetchone():
+            return jsonify({'error': 'User not found'}), 404
+        
+        updated_count = 0
+        for key, perm_data in permissions.items():
+            if ':' not in key:
+                continue
+                
+            hostname, door_name = key.split(':', 1)
+            
+            cursor.execute('''
+                INSERT OR REPLACE INTO user_permissions 
+                (user_id, device_hostname, door_name, can_access, access_type, valid_from, valid_until, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ''', (
+                user_id, hostname, door_name,
+                perm_data.get('can_access', True),
+                perm_data.get('access_type', 'permanent'),
+                perm_data.get('valid_from', 0),
+                perm_data.get('valid_until', 0)
+            ))
+            updated_count += 1
+        
+        conn.commit()
+        
+        logger.info(f"Updated {updated_count} permissions for user ID {user_id}")
+        
+        return jsonify({
+            'message': f'Updated {updated_count} permissions',
+            'user_id': user_id
+        })
 
 # SocketIO events
 @socketio.on('connect')

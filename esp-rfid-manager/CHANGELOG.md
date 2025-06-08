@@ -7,6 +7,32 @@
 
 ## [Unreleased]
 
+## [1.1.2] - 2025-06-07
+
+### Додадено
+- **User Permissions Grid**: Додаден комплетен систем за управување пристапни дозволи со grid интерфејс
+- **Integrated Card Template Generator**: Вграден генератор за Home Assistant картички со copy-to-clipboard
+- **User Permission Management**: Нови API endpoints за granular контрола на пристап по врати/уреди
+- **Enhanced Database Schema**: Додадена user_permissions табела за детална контрола на пристап
+
+### Поправено  
+- **Offline Device Deletion**: Поправена логика за бришење offline уреди (offline > 2 минути)
+- **Compact Device Layout**: Редизајниран компактен приказ на уреди (3-4 картички по ред)
+- **Template Generator**: Поправен скршен card generator и интегриран во modal интерфејс
+- **Permission Button**: Додаден permissions edit button во users табела со shield икона
+
+### Подобрено
+- **User Interface**: Подобар и компактен layout за приказ на уреди
+- **Permission Management**: Визуелен grid интерфејс сличен на enterprise access control системи  
+- **Device Status Indicators**: Подобри визуелни индикатори за online/offline статус
+- **Error Handling**: Подобрени error мессиџи и user feedback низ интерфејсот
+
+### Техничко
+- Нови API endpoints: `/api/users/<id>/permissions` (GET/PUT)
+- Додадена user_permissions табела во иницијализацијата на базата
+- Enhanced device deletion логика со времински провери
+- Подобрена MQTT command handling за multi-device операции
+
 ## [1.1.0] - 2025-06-07
 
 ### Главни Нови Функции

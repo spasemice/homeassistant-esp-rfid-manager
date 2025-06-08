@@ -2348,7 +2348,7 @@ if __name__ == '__main__':
     sys.stdout.flush()
     
     try:
-        logger.info("ESP-RFID Manager v1.3.6 starting...")
+        logger.info("ESP-RFID Manager v1.3.7 starting...")
         print("Logger initialized successfully")
         sys.stdout.flush()
         
@@ -2413,8 +2413,8 @@ if __name__ == '__main__':
         # Start Flask-SocketIO server
         logger.info("Starting Flask-SocketIO server...")
         
-        # For Home Assistant ingress, bind to localhost only
-        bind_host = '127.0.0.1' if SUPERVISOR_TOKEN else '0.0.0.0'
+        # For ingress compatibility, bind to all interfaces
+        bind_host = '0.0.0.0'
         logger.info(f"Binding to host: {bind_host}, port: {port}")
         
         # Pre-startup checks
@@ -2463,12 +2463,15 @@ if __name__ == '__main__':
         
         try:
             logger.info(f"Starting SocketIO with host={bind_host}, port={port}")
+            # Add keepalive and ingress-friendly settings
             socketio.run(app, 
                         host=bind_host, 
                         port=port, 
                         debug=False,
                         allow_unsafe_werkzeug=True,
-                        log_output=True)
+                        log_output=True,
+                        use_reloader=False,
+                        threaded=True)
             logger.info("Flask server exited normally")
         except OSError as os_error:
             if "Address already in use" in str(os_error):

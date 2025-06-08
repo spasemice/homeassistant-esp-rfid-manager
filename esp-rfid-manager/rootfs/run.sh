@@ -57,5 +57,9 @@ fi
 cd /app
 bashio::log.info "Changing to /app directory and starting Python application..."
 
-# Run with verbose output for debugging
-python3 -u app.py 2>&1 
+# Test with minimal Flask app first
+bashio::log.info "Testing with minimal Flask app to isolate startup issue..."
+python3 -u test_app.py 2>&1
+
+# If test works, use main app
+# python3 -u app.py 2>&1 

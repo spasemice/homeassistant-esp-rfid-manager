@@ -198,12 +198,11 @@ def require_auth(f):
     """Decorator to require Home Assistant authentication"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # In ingress mode, only allow connections from Home Assistant ingress gateway
+        # Log client IP for debugging
         if SUPERVISOR_TOKEN:
             client_ip = request.environ.get('REMOTE_ADDR', request.remote_addr)
-            if client_ip != '172.30.32.2':
-                logger.warning(f"Blocked request from unauthorized IP: {client_ip}")
-                return "Access denied - invalid source", 403
+            logger.info(f"Request from IP: {client_ip}")
+            # Temporarily allow all IPs to test ingress connectivity
         
         ha_user = check_ha_auth()
         return f(*args, **kwargs)
@@ -2229,12 +2228,11 @@ def api_update_user_permissions(user_id):
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection"""
-    # In ingress mode, only allow connections from Home Assistant ingress gateway
+    # Log client IP for debugging
     if SUPERVISOR_TOKEN:
         client_ip = request.environ.get('REMOTE_ADDR', request.remote_addr)
-        if client_ip != '172.30.32.2':
-            logger.warning(f"Blocked SocketIO connection from unauthorized IP: {client_ip}")
-            return False  # Reject connection
+        logger.info(f"SocketIO connection from IP: {client_ip}")
+        # Temporarily allow all IPs to test ingress connectivity
     
     logger.info('Web client connected')
     emit('connected', {'data': 'Connected to ESP-RFID Manager'})
@@ -2332,7 +2330,7 @@ if __name__ == '__main__':
     sys.stdout.flush()
     
     try:
-        logger.info("ESP-RFID Manager v1.3.1 starting...")
+        logger.info("ESP-RFID Manager v1.3.4 starting...")
         print("Logger initialized successfully")
         sys.stdout.flush()
         

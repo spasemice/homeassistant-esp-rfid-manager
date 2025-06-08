@@ -7,6 +7,34 @@
 
 ## [Unreleased]
 
+## [1.0.9] - 2025-06-07
+
+### Критични Поправки
+- **ПОПРАВЕНИ MQTT TOPICS** - Сега користи device-specific topics (esprfid/HOSTNAME/cmd) наместо генерички
+- **ДОДАДЕНА /tag TOPIC ПОДДРШКА** - Слуша на esprfid/+/tag за real-time card scan events
+- **ПОПРАВЕНА CARD DETECTION** - Сега правилно детектира картички од /tag topic
+- **ПОПРАВЕНИ MQTT КОМАНДИ** - adduser, deletuid, opendoor сега се испраќаат на правилните device topics
+
+### Нови Функции
+- Додадена handle_tag_message() функција за обработка на card scan events
+- Автоматско извлекување на device hostname од MQTT topic структура
+- Real-time card detection од /tag topic кога е отворен Add User модал
+- Device-specific MQTT command routing за сите ESP-RFID команди
+
+### Подобрено
+- Enhanced MQTT logging со 🏷️ емоџи за tag events
+- Подобрена device hostname detection од topic path
+- Real-time dashboard updates кога се скенираат картички
+- Поправена MQTT command delivery со правилни device-specific topics
+
+### Техничко
+- Проширени MQTT subscriptions: +/send, +/cmd, +/tag topics
+- Додаден device_hostname параметар во сите MQTT command функции
+- Автоматско hostname mapping од topic structure
+- Enhanced error handling за device hostname detection
+
+**ВАЖНО**: Оваа верзија решава критичен проблем со MQTT комуникација што спречуваше додавање корисници и real-time updates!
+
 ## [1.0.8] - 2025-06-07
 
 ### Поправено

@@ -168,12 +168,14 @@ class ESPRFIDManager:
         if rc == 0:
             logger.info("Connected to MQTT broker")
             # Subscribe to ESP-RFID topics
-            client.subscribe(f"{MQTT_TOPIC}/+/send")
-            client.subscribe(f"{MQTT_TOPIC}/send")  # For single device setup
-            client.subscribe(f"{MQTT_TOPIC}/+/cmd")  # For command responses
-            client.subscribe(f"{MQTT_TOPIC}/cmd")    # For single device cmd responses
+            client.subscribe(f"{MQTT_TOPIC}/+/send")     # Device status/heartbeat messages
+            client.subscribe(f"{MQTT_TOPIC}/send")       # For single device setup
+            client.subscribe(f"{MQTT_TOPIC}/+/cmd")      # Command responses from devices
+            client.subscribe(f"{MQTT_TOPIC}/cmd")        # For single device cmd responses
+            client.subscribe(f"{MQTT_TOPIC}/+/tag")      # Card scan events from devices
+            client.subscribe(f"{MQTT_TOPIC}/tag")        # For single device tag events
             client.subscribe("homeassistant/button/+/cmd")  # For HA button commands
-            logger.info(f"Subscribed to {MQTT_TOPIC}/+/send, {MQTT_TOPIC}/send, {MQTT_TOPIC}/+/cmd, {MQTT_TOPIC}/cmd, and HA button commands")
+            logger.info(f"Subscribed to: {MQTT_TOPIC}/+/send, {MQTT_TOPIC}/+/cmd, {MQTT_TOPIC}/+/tag, and HA button commands")
         else:
             logger.error(f"Failed to connect to MQTT broker with code {rc}")
     
@@ -205,6 +207,15 @@ class ESPRFIDManager:
             device_hostname = payload.get('hostname', 'unknown')
             device_ip = payload.get('ip', '')
             
+            # Try to extract hostname from topic if not in payload
+            if device_hostname == 'unknown' and '/' in topic:
+                topic_parts = topic.split('/')
+                if len(topic_parts) >= 2:
+                    potential_hostname = topic_parts[1]  # esprfid/HOSTNAME/send -> HOSTNAME
+                    if potential_hostname and potential_hostname != 'send' and potential_hostname != 'cmd' and potential_hostname != 'tag':
+                        device_hostname = potential_hostname
+                        payload['hostname'] = device_hostname  # Add to payload for later processing
+            
             # Update device status
             self.update_device_status(device_hostname, device_ip)
             
@@ -212,7 +223,10 @@ class ESPRFIDManager:
             msg_type = payload.get('type', '')
             cmd = payload.get('cmd', '')
             
-            if msg_type == 'boot':
+            # Check if this is from a tag topic (card scan event)
+            if '/tag' in topic:
+                self.handle_tag_message(payload)
+            elif msg_type == 'boot':
                 self.handle_boot_message(payload)
             elif msg_type == 'heartbeat':
                 self.handle_heartbeat_message(payload)  
@@ -423,6 +437,86 @@ class ESPRFIDManager:
         else:
             logger.warning(f"Incomplete user data received: {payload}")
     
+    def handle_tag_message(self, payload: Dict):
+        """Handle tag message from device (card scan events from /tag topic)"""
+        # Extract device hostname from MQTT topic if not in payload
+        hostname = payload.get('hostname', 'unknown')
+        uid = payload.get('uid', '')
+        username = payload.get('username', 'Unknown')
+        access_type = payload.get('access', 'Denied')
+        door_name = payload.get('doorName', hostname)
+        pincode = payload.get('pincode', '')
+        timestamp_unix = payload.get('time', 0)
+        
+        logger.info(f"🏷️ Tag scan from {hostname}: {username} ({uid}) -> {access_type}")
+        
+        # Log the access attempt
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO access_logs 
+                (device_hostname, uid, username, access_type, is_known, door_name, raw_data)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (hostname, uid, username, access_type, username != 'Unknown', door_name, json.dumps(payload)))
+            conn.commit()
+        
+        # Emit access event to web clients
+        socketio.emit('access_event', {
+            'hostname': hostname,
+            'uid': uid,
+            'username': username,
+            'access_type': access_type,
+            'is_known': username != 'Unknown',
+            'door_name': door_name,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        # Handle unknown cards for registration - only if detection is active
+        if username == 'Unknown' and uid and hostname and self.card_detection_active:
+            logger.info(f"🔍 Card detection active - Unknown card detected: {uid} on {hostname}")
+            socketio.emit('new_card_detected', {
+                'uid': uid,
+                'hostname': hostname,
+                'timestamp': datetime.now().isoformat()
+            })
+        elif username == 'Unknown' and uid and hostname:
+            logger.info(f"🔍 Unknown card scanned: {uid} on {hostname} (detection not active)")
+        
+        # Emit card status info (registered or unknown)
+        card_scan_event = {
+            'uid': uid,
+            'username': username,
+            'hostname': hostname,
+            'door_name': door_name,
+            'access_type': access_type,
+            'is_registered': username != 'Unknown',
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        logger.info(f"🎯 Card scan result: {username} ({uid}) -> {access_type} on {hostname}")
+        socketio.emit('card_scan_result', card_scan_event)
+        
+        # Update Home Assistant sensors
+        self.update_ha_sensors(hostname, 'access', {
+            'username': username,
+            'uid': uid,
+            'access_type': access_type,
+            'door_name': door_name,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        # Log to HA history
+        self.log_access_to_ha_history(hostname, username, uid, access_type, 'rfid')
+        
+        # If unknown card, also send unknown card event
+        if username == 'Unknown':
+            self.update_ha_sensors(hostname, 'unknown_card', {
+                'uid': uid,
+                'hostname': hostname,
+                'door_name': door_name,
+                'timestamp': datetime.now().isoformat()
+            })
+
     def handle_log_message(self, payload: Dict):
         """Handle log message from device (access attempts)"""
         hostname = payload.get('hostname', '')
@@ -531,23 +625,36 @@ class ESPRFIDManager:
             ''', (hostname, event_type, source, description, data))
             conn.commit()
     
-    def send_mqtt_command(self, device_ip: str, command: Dict):
+    def send_mqtt_command(self, device_ip: str, command: Dict, device_hostname: str = None):
         """Send command to ESP-RFID device via MQTT"""
         command['doorip'] = device_ip
-        topic = f"{MQTT_TOPIC}/cmd"
+        
+        # Find device hostname by IP if not provided
+        if not device_hostname:
+            for hostname, device_info in self.connected_devices.items():
+                if device_info.get('ip_address') == device_ip:
+                    device_hostname = hostname
+                    break
+        
+        # Use device-specific topic if hostname found, otherwise fallback to generic
+        if device_hostname:
+            topic = f"{MQTT_TOPIC}/{device_hostname}/cmd"
+        else:
+            topic = f"{MQTT_TOPIC}/cmd"
+            logger.warning(f"⚠️ Device hostname not found for IP {device_ip}, using generic topic")
         
         try:
             command_json = json.dumps(command)
             result = self.mqtt_client.publish(topic, command_json)
-            logger.info(f"📤 MQTT Command sent to {device_ip} via topic '{topic}': {command}")
+            logger.info(f"📤 MQTT Command sent to {device_hostname or device_ip} via topic '{topic}': {command}")
             logger.info(f"📤 MQTT Publish result: {result.rc} (0=success)")
             return True
         except Exception as e:
-            logger.error(f"❌ Failed to send MQTT command to {device_ip}: {e}")
+            logger.error(f"❌ Failed to send MQTT command to {device_hostname or device_ip}: {e}")
             return False
     
     def add_user(self, device_ip: str, uid: str, username: str, acctype: int = 1, 
-                 valid_since: int = 0, valid_until: int = 0) -> bool:
+                 valid_since: int = 0, valid_until: int = 0, device_hostname: str = None) -> bool:
         """Add user to ESP-RFID device"""
         command = {
             'cmd': 'adduser',
@@ -557,29 +664,29 @@ class ESPRFIDManager:
             'validsince': str(valid_since),
             'validuntil': str(valid_until)
         }
-        return self.send_mqtt_command(device_ip, command)
+        return self.send_mqtt_command(device_ip, command, device_hostname)
     
-    def delete_user(self, device_ip: str, uid: str) -> bool:
+    def delete_user(self, device_ip: str, uid: str, device_hostname: str = None) -> bool:
         """Delete user from ESP-RFID device"""
         command = {
             'cmd': 'deletuid',
             'uid': uid
         }
-        return self.send_mqtt_command(device_ip, command)
+        return self.send_mqtt_command(device_ip, command, device_hostname)
     
-    def open_door(self, device_ip: str) -> bool:
+    def open_door(self, device_ip: str, device_hostname: str = None) -> bool:
         """Open door on ESP-RFID device"""
         command = {
             'cmd': 'opendoor'
         }
-        return self.send_mqtt_command(device_ip, command)
+        return self.send_mqtt_command(device_ip, command, device_hostname)
     
-    def get_user_list(self, device_ip: str) -> bool:
+    def get_user_list(self, device_ip: str, device_hostname: str = None) -> bool:
         """Request user list from ESP-RFID device"""
         command = {
             'cmd': 'getuserlist'
         }
-        return self.send_mqtt_command(device_ip, command)
+        return self.send_mqtt_command(device_ip, command, device_hostname)
     
     def send_ha_discovery(self, hostname: str, ip_address: str):
         """Send Home Assistant MQTT Discovery for device sensors"""
@@ -788,7 +895,7 @@ class ESPRFIDManager:
                 device_ip = row['ip_address']
             
             # Send unlock command
-            success = self.open_door(device_ip)
+            success = self.open_door(device_ip, hostname)
             
             if success:
                 logger.info(f"Unlock command sent successfully to {hostname} ({device_ip})")
@@ -1017,7 +1124,7 @@ def api_add_user():
             device_ip = row['ip_address']
             
             # Send MQTT command to device
-            success = manager.add_user(device_ip, uid, username, acctype, valid_since, valid_until)
+            success = manager.add_user(device_ip, uid, username, acctype, valid_since, valid_until, device_hostname)
             
             if success:
                 # Add to local database
@@ -1067,7 +1174,7 @@ def api_delete_user(user_id):
             return jsonify({'error': 'Device not found'}), 404
         
         # Send MQTT command
-        success = manager.delete_user(device['ip_address'], user['uid'])
+        success = manager.delete_user(device['ip_address'], user['uid'], user['device_hostname'])
         
         if success:
             # Remove from local database
@@ -1208,7 +1315,7 @@ def api_open_door():
         if not device:
             return jsonify({'error': 'Device not found'}), 404
         
-        success = manager.open_door(device['ip_address'])
+        success = manager.open_door(device['ip_address'], device_hostname)
         
         if success:
             return jsonify({'message': 'Door opened successfully'})

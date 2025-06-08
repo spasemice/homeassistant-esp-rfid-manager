@@ -2332,7 +2332,7 @@ if __name__ == '__main__':
     sys.stdout.flush()
     
     try:
-        logger.info("ESP-RFID Manager v1.3.0 starting...")
+        logger.info("ESP-RFID Manager v1.3.1 starting...")
         print("Logger initialized successfully")
         sys.stdout.flush()
         
@@ -2405,16 +2405,40 @@ if __name__ == '__main__':
         import socket
         try:
             # Check if port is available
+            logger.info(f"Checking port {port} availability on {bind_host}...")
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(1)
+            sock.settimeout(2)
             result = sock.connect_ex((bind_host, port))
             sock.close()
             if result == 0:
-                logger.warning(f"Port {port} appears to already be in use!")
+                logger.error(f"Port {port} is already in use on {bind_host}!")
+                logger.error("Cannot start Flask - port conflict detected")
+                
+                # Check what's using the port
+                import subprocess
+                try:
+                    result = subprocess.run(['netstat', '-tulpn'], capture_output=True, text=True)
+                    lines = result.stdout.split('\n')
+                    for line in lines:
+                        if f':{port}' in line:
+                            logger.error(f"Port usage details: {line.strip()}")
+                except:
+                    pass
+                    
+                sys.exit(1)  # Exit early if port is in use
             else:
-                logger.info(f"Port {port} is available")
+                logger.info(f"Port {port} is available on {bind_host}")
+                
+            # Also try to bind to test
+            test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            test_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            test_sock.bind((bind_host, port))
+            test_sock.close()
+            logger.info(f"Successfully tested bind to {bind_host}:{port}")
+            
         except Exception as e:
-            logger.warning(f"Could not check port availability: {e}")
+            logger.error(f"Port availability check failed: {e}")
+            logger.exception("Port check error details:")
         
         # Start Flask with detailed logging
         logger.info("About to call socketio.run()...")
@@ -2422,6 +2446,7 @@ if __name__ == '__main__':
         sys.stdout.flush()
         
         try:
+            logger.info(f"Starting SocketIO with host={bind_host}, port={port}")
             socketio.run(app, 
                         host=bind_host, 
                         port=port, 
@@ -2429,6 +2454,21 @@ if __name__ == '__main__':
                         allow_unsafe_werkzeug=True,
                         log_output=True)
             logger.info("Flask server exited normally")
+        except OSError as os_error:
+            if "Address already in use" in str(os_error):
+                logger.error(f"Port {port} is already in use! Cannot start Flask server.")
+                logger.error("This might be because another service is using this port.")
+                # Try alternative port for testing
+                alt_port = port + 1
+                logger.info(f"Trying alternative port {alt_port}...")
+                try:
+                    socketio.run(app, host=bind_host, port=alt_port, debug=False, allow_unsafe_werkzeug=True)
+                except Exception as alt_error:
+                    logger.error(f"Alternative port {alt_port} also failed: {alt_error}")
+                    raise
+            else:
+                logger.error(f"Flask network error: {os_error}")
+                raise
         except Exception as flask_error:
             logger.error(f"Flask startup failed: {flask_error}")
             logger.exception("Flask error traceback:")

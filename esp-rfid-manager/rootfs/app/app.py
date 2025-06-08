@@ -2229,148 +2229,174 @@ def api_homeassistant_access_history():
     })
 
 @app.route('/api/users/<int:user_id>/permissions')
+@require_auth
 def api_get_user_permissions(user_id):
     """Get user permissions for all devices/doors"""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        # Get user info
-        cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
-        user = cursor.fetchone()
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
-        
-        # Get all devices
-        cursor.execute('SELECT hostname, ip_address, status FROM devices ORDER BY hostname')
-        devices = cursor.fetchall()
-        
-        # Get current permissions
-        cursor.execute('''
-            SELECT device_hostname, door_name, can_access, access_type, valid_from, valid_until
-            FROM user_permissions 
-            WHERE user_id = ?
-        ''', (user_id,))
-        permissions = {f"{row['device_hostname']}:{row['door_name']}": row for row in cursor.fetchall()}
-        
-        # Build permissions grid
-        result = {
-            'user': {
-                'id': user['id'],
-                'uid': user['uid'],
-                'username': user['username']
-            },
-            'devices': [],
-            'permissions': {}
-        }
-        
-        for device in devices:
-            hostname = device['hostname']
-            doors = ['main', 'front', 'back', 'side']  # Default doors
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
             
-            result['devices'].append({
-                'hostname': hostname,
-                'ip_address': device['ip_address'],
-                'status': device['status'],
-                'doors': doors
-            })
+            # Get user info
+            cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
+            user = cursor.fetchone()
+            if not user:
+                return jsonify({'error': 'User not found'}), 404
             
-            for door in doors:
-                key = f"{hostname}:{door}"
-                perm = permissions.get(key)
-                result['permissions'][key] = {
-                    'can_access': perm['can_access'] if perm else True,
-                    'access_type': perm['access_type'] if perm else 'permanent',
-                    'valid_from': perm['valid_from'] if perm else 0,
-                    'valid_until': perm['valid_until'] if perm else 0
-                }
-    
-    return jsonify(result)
+            # Get all devices
+            cursor.execute('SELECT hostname, ip_address, status FROM devices ORDER BY hostname')
+            devices = cursor.fetchall()
+            
+            # Get current permissions
+            cursor.execute('''
+                SELECT device_hostname, door_name, can_access, access_type, valid_from, valid_until
+                FROM user_permissions 
+                WHERE user_id = ?
+            ''', (user_id,))
+            permissions_rows = cursor.fetchall()
+            permissions = {f"{row['device_hostname']}:{row['door_name']}": row for row in permissions_rows}
+            
+            # Build permissions grid
+            result = {
+                'user': {
+                    'id': user['id'],
+                    'uid': user['uid'],
+                    'username': user['username']
+                },
+                'devices': [],
+                'permissions': {}
+            }
+            
+            for device in devices:
+                hostname = device['hostname']
+                doors = ['main', 'front', 'back', 'side']  # Default doors
+                
+                result['devices'].append({
+                    'hostname': hostname,
+                    'ip_address': device['ip_address'],
+                    'status': device['status'],
+                    'doors': doors
+                })
+                
+                for door in doors:
+                    key = f"{hostname}:{door}"
+                    perm = permissions.get(key)
+                    result['permissions'][key] = {
+                        'can_access': perm['can_access'] if perm else True,
+                        'access_type': perm['access_type'] if perm else 'permanent',
+                        'valid_from': perm['valid_from'] if perm else 0,
+                        'valid_until': perm['valid_until'] if perm else 0
+                    }
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Error getting permissions for user {user_id}: {e}")
+        return jsonify({'error': f'Failed to get permissions: {str(e)}'}), 500
 
 @app.route('/api/users/<int:user_id>/permissions', methods=['PUT'])
+@require_auth
 def api_update_user_permissions(user_id):
     """Update user permissions for devices/doors"""
-    data = request.get_json()
-    permissions = data.get('permissions', {})
-    
-    with get_db() as conn:
-        cursor = conn.cursor()
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+            
+        permissions = data.get('permissions', {})
+        if not permissions:
+            return jsonify({'error': 'No permissions provided'}), 400
         
-        # Verify user exists
-        cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
-        if not cursor.fetchone():
-            return jsonify({'error': 'User not found'}), 404
-        
-        updated_count = 0
-        # Determine if user has any access permissions across all devices
-        has_any_access = False
-        for key, perm_data in permissions.items():
-            if ':' not in key:
-                continue
-            if perm_data.get('can_access', True):
-                has_any_access = True
-                break
-        
-        # Update access type based on permissions (Always=1 if has access, Disabled=0 if no access)
-        new_acctype = 1 if has_any_access else 0
-        
-        for key, perm_data in permissions.items():
-            if ':' not in key:
-                continue
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Verify user exists
+            cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
+            if not cursor.fetchone():
+                return jsonify({'error': 'User not found'}), 404
+            
+            updated_count = 0
+            # Determine if user has any access permissions across all devices
+            has_any_access = False
+            for key, perm_data in permissions.items():
+                if ':' not in key:
+                    continue
+                if perm_data.get('can_access', True):
+                    has_any_access = True
+                    break
+            
+            # Update access type based on permissions (Always=1 if has access, Disabled=0 if no access)
+            new_acctype = 1 if has_any_access else 0
+            
+            for key, perm_data in permissions.items():
+                if ':' not in key:
+                    continue
+                    
+                hostname, door_name = key.split(':', 1)
                 
-            hostname, door_name = key.split(':', 1)
+                try:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO user_permissions 
+                        (user_id, device_hostname, door_name, can_access, access_type, valid_from, valid_until, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    ''', (
+                        user_id, hostname, door_name,
+                        perm_data.get('can_access', True),
+                        perm_data.get('access_type', 'permanent'),
+                        perm_data.get('valid_from', 0),
+                        perm_data.get('valid_until', 0)
+                    ))
+                    updated_count += 1
+                except Exception as e:
+                    logger.error(f"Error updating permission for {hostname}:{door_name}: {e}")
+                    continue
             
+            # Update user access type in users table
             cursor.execute('''
-                INSERT OR REPLACE INTO user_permissions 
-                (user_id, device_hostname, door_name, can_access, access_type, valid_from, valid_until, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            ''', (
-                user_id, hostname, door_name,
-                perm_data.get('can_access', True),
-                perm_data.get('access_type', 'permanent'),
-                perm_data.get('valid_from', 0),
-                perm_data.get('valid_until', 0)
-            ))
-            updated_count += 1
-        
-        # Update user access type in users table
-        cursor.execute('''
-            UPDATE users SET acctype = ?, updated_at = datetime('now') 
-            WHERE id = ?
-        ''', (new_acctype, user_id))
-        
-        # Also update ESP-RFID devices via MQTT for all user instances
-        cursor.execute('''
-            SELECT DISTINCT device_hostname, uid FROM users WHERE id = ?
-        ''', (user_id,))
-        user_devices = cursor.fetchall()
-        
-        for row in user_devices:
-            device_hostname = row['device_hostname']
-            uid = row['uid']
+                UPDATE users SET acctype = ?, updated_at = datetime('now') 
+                WHERE id = ?
+            ''', (new_acctype, user_id))
             
-            # Get device IP
-            cursor.execute('SELECT ip_address, status FROM devices WHERE hostname = ?', (device_hostname,))
-            device = cursor.fetchone()
+            # Also update ESP-RFID devices via MQTT for all user instances
+            cursor.execute('''
+                SELECT DISTINCT device_hostname, uid FROM users WHERE id = ?
+            ''', (user_id,))
+            user_devices = cursor.fetchall()
             
-            if device and device['status'] == 'online':
-                # Update user access type on ESP-RFID device
-                cursor.execute('SELECT username FROM users WHERE id = ?', (user_id,))
-                user_row = cursor.fetchone()
-                if user_row:
-                    success = manager.add_user(
-                        device['ip_address'], uid, user_row['username'], 
-                        new_acctype, 0, 0, device_hostname
-                    )
-                    logger.info(f"Updated user {uid} access type to {new_acctype} on device {device_hostname}: {'success' if success else 'failed'}")
-        
-        conn.commit()
-        
-        logger.info(f"Updated {updated_count} permissions for user ID {user_id}")
-        
-        return jsonify({
-            'message': f'Updated {updated_count} permissions',
-            'user_id': user_id
-        })
+            for row in user_devices:
+                device_hostname = row['device_hostname']
+                uid = row['uid']
+                
+                try:
+                    # Get device IP
+                    cursor.execute('SELECT ip_address, status FROM devices WHERE hostname = ?', (device_hostname,))
+                    device = cursor.fetchone()
+                    
+                    if device and device['status'] == 'online':
+                        # Update user access type on ESP-RFID device
+                        cursor.execute('SELECT username FROM users WHERE id = ?', (user_id,))
+                        user_row = cursor.fetchone()
+                        if user_row:
+                            success = manager.add_user(
+                                device['ip_address'], uid, user_row['username'], 
+                                new_acctype, 0, 0, device_hostname
+                            )
+                            logger.info(f"Updated user {uid} access type to {new_acctype} on device {device_hostname}: {'success' if success else 'failed'}")
+                except Exception as e:
+                    logger.error(f"Error updating user on device {device_hostname}: {e}")
+                    continue
+            
+            conn.commit()
+            
+            logger.info(f"Updated {updated_count} permissions for user ID {user_id}")
+            
+            return jsonify({
+                'message': f'Successfully updated {updated_count} permissions',
+                'user_id': user_id
+            })
+            
+    except Exception as e:
+        logger.error(f"Error updating permissions for user {user_id}: {e}")
+        return jsonify({'error': f'Failed to update permissions: {str(e)}'}), 500
 
 # SocketIO events
 @socketio.on('connect')

@@ -918,8 +918,17 @@
 
         function editUserPermissions(userId) {
             fetch(getApiUrl(`/api/users/${userId}/permissions`))
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    return response.json();
+                })
                 .then(data => {
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
                     currentUserPermissions = data;
                     
                     // Set user info
@@ -939,7 +948,7 @@
                 })
                 .catch(error => {
                     console.error('Error loading user permissions:', error);
-                    alert('Error loading user permissions');
+                    alert('Error loading user permissions: ' + error.message);
                 });
         }
 
@@ -1029,18 +1038,27 @@
                 },
                 body: JSON.stringify({ permissions })
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                return response.json();
+            })
             .then(result => {
+                if (result.error) {
+                    throw new Error(result.error);
+                }
                 if (result.message) {
                     showAlert('✅ ' + result.message, 'success');
                     bootstrap.Modal.getInstance(document.getElementById('userPermissionsModal')).hide();
+                    loadUsers(); // Refresh users list
                 } else {
-                    alert('Error: ' + (result.error || 'Unknown error'));
+                    alert('Unexpected response: ' + JSON.stringify(result));
                 }
             })
             .catch(error => {
                 console.error('Error saving permissions:', error);
-                alert('Error saving permissions');
+                alert('Error saving permissions: ' + error.message);
             });
         }
 
